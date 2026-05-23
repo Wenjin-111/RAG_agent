@@ -1,0 +1,41 @@
+[project]
+name = "argus-python"
+version = "4.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-postgres>=0.0.13",
+    "langgraph>=0.2.0",
+    "pgvector>=0.3.0",
+    "elasticsearch[async]>=8.15.0",
+    "minio>=7.2.0",
+    "pyjwt>=2.9.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-multipart>=0.0.18",
+    "sse-starlette>=2.1.0",
+    "httpx>=0.28.0",
+    "python-docx>=1.1.0",
+    "pdfplumber>=0.11.0",
+    "aiofiles>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "pytest-cov>=6.0",
+    "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
