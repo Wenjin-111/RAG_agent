@@ -47,5 +47,9 @@ __pycache__/
 # --- Node ---
 node_modules/
 
+# --- Test / temp ---
+*_test_*.mjs
+*_test_*.py
+
 # --- Logs ---
 *.log
