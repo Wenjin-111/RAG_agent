@@ -85,6 +85,29 @@
 - LLM 用量统计（调用次数、Token、费用、趋势图、排行）
 - 模型配置管理（聊天/嵌入模型独立切换）
 
+## 项目截图
+
+### 首页
+![首页](./docs/images/首页.png)
+
+### 知识库问答
+![知识库问答](./docs/images/知识库问答.png)
+
+### AI 助手
+![AI助手](./docs/images/AI助手.png)
+
+### 协作小组
+![协作小组](./docs/images/协作小组.png)
+
+### 用户文档管理
+![用户文档管理](./docs/images/用户文档管理.png)
+
+### 使用统计
+![使用统计](./docs/images/使用统计.png)
+
+### 管理员界面
+![管理员界面](./docs/images/管理员界面.png)
+
 ## 快速开始
 
 详见 **[STARTUP.md](STARTUP.md)**
