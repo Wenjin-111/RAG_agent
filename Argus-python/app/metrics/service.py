@@ -93,8 +93,8 @@ class LlmUsageStatisticsService:
             for r in result
         ]
 
-    async def top_users(self, limit: int = 10) -> list:
-        result = await self.session.execute(
+    async def top_users(self, limit: int = 10, since=None) -> list:
+        stmt = (
             select(
                 LlmUsageRecord.user_id,
                 User.display_name,
@@ -103,10 +103,13 @@ class LlmUsageStatisticsService:
                 func.sum(LlmUsageRecord.cost_amount).label("cost"),
             )
             .join(User, LlmUsageRecord.user_id == User.id)
-            .group_by(LlmUsageRecord.user_id, User.display_name)
-            .order_by(func.sum(LlmUsageRecord.total_tokens).desc())
-            .limit(limit)
         )
+        if since is not None:
+            stmt = stmt.where(LlmUsageRecord.created_at >= since)
+        stmt = stmt.group_by(LlmUsageRecord.user_id, User.display_name).order_by(
+            func.sum(LlmUsageRecord.total_tokens).desc()
+        ).limit(limit)
+        result = await self.session.execute(stmt)
         return [
             {
                 "id": r.user_id,
@@ -118,8 +121,8 @@ class LlmUsageStatisticsService:
             for r in result
         ]
 
-    async def top_groups(self, limit: int = 10) -> list:
-        result = await self.session.execute(
+    async def top_groups(self, limit: int = 10, since=None) -> list:
+        stmt = (
             select(
                 LlmUsageRecord.group_id,
                 Group.group_name,
@@ -129,10 +132,13 @@ class LlmUsageStatisticsService:
             )
             .join(Group, LlmUsageRecord.group_id == Group.id)
             .where(LlmUsageRecord.group_id.isnot(None))
-            .group_by(LlmUsageRecord.group_id, Group.group_name)
-            .order_by(func.sum(LlmUsageRecord.total_tokens).desc())
-            .limit(limit)
         )
+        if since is not None:
+            stmt = stmt.where(LlmUsageRecord.created_at >= since)
+        stmt = stmt.group_by(LlmUsageRecord.group_id, Group.group_name).order_by(
+            func.sum(LlmUsageRecord.total_tokens).desc()
+        ).limit(limit)
+        result = await self.session.execute(stmt)
         return [
             {
                 "id": r.group_id,

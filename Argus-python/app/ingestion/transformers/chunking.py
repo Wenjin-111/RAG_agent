@@ -12,7 +12,7 @@ SENTENCE_BREAK = re.compile(r"[。！？；!?;]\s*")
 CODE_FENCE = re.compile(r"^```", re.MULTILINE)
 
 STRATEGY = "structure-aware-token-budget-v1"
-CHARS_PER_TOKEN = 1
+CHARS_PER_TOKEN = 3.5
 
 
 @dataclass
@@ -131,13 +131,15 @@ class StructureAwareChunkTransformer:
         return result if result else segments
 
     def _split_by_sentences(self, text: str) -> list[str]:
-        parts = SENTENCE_BREAK.split(text)
         result = []
-        for i in range(0, len(parts) - 1):
-            result.append(parts[i] + (text[sum(len(p) for p in parts[:i+1])] if i < len(parts) - 1 else ""))
-        if not result:
-            return [text]
-        return result
+        start = 0
+        for m in SENTENCE_BREAK.finditer(text):
+            end = m.end()
+            result.append(text[start:end])
+            start = end
+        if start < len(text):
+            result.append(text[start:])
+        return result if result else [text]
 
     def _greedy_merge(self, pieces: list[str], section: Section) -> List[ChunkRange]:
         target = self.config.target_tokens * CHARS_PER_TOKEN
@@ -158,7 +160,7 @@ class StructureAwareChunkTransformer:
                     heading_path=section.title,
                 ))
                 # back-walk for overlap
-                overlap_start = max(0, current_start + current_len - overlap)
+                overlap_start = int(max(0, current_start + current_len - overlap))
                 current_start = overlap_start
                 current_len = 0
 

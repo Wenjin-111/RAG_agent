@@ -35,8 +35,6 @@ class AssistantAgentFactory:
             openai_api_base=cfg["base_url"],
             temperature=settings.chat.temperature,
         )
-        # Module-level checkpointer so conversation state persists across requests
-        self._memory = MemorySaver()
 
     def create_agent(self, chat_model, instruction: str, tool_mode: str,
                      group_id: Optional[int], result_holder: ResultHolder):

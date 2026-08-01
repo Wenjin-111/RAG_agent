@@ -17,21 +17,12 @@ COLLECTION_NAME = "rag_document_chunks"
 async def _embed_texts(texts: List[str], user_id: int = None) -> List[List[float]]:
     """Call embedding API, using active model config if available."""
     from app.models_config.resolver import get_embedding_config
-    import asyncio as _asyncio
 
     # Try to get admin's active config; if not available, use .env defaults
     s = settings.embedding
     api_url = ""
     api_key = s.api_key
     model_name = s.model_name
-
-    try:
-        cfg = _asyncio.get_event_loop()
-        if cfg and user_id:
-            # Can't await in sync context; use defaults
-            pass
-    except Exception:
-        pass
 
     # Use admin user (id=1) as the config owner
     try:

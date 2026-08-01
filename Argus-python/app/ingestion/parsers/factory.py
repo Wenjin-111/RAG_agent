@@ -1,5 +1,6 @@
 from app.ingestion.parsers.base import DocumentParser
-from app.ingestion.parsers.pdf_parser import PdfParser
+from app.ingestion.parsers.pdf_parser import PdfParser  # kept as fallback
+from app.ingestion.parsers.docling_parser import DoclingPdfParser
 from app.ingestion.parsers.docx_parser import DocxParser
 from app.ingestion.parsers.txt_parser import TxtParser
 from app.ingestion.parsers.md_parser import MdParser
@@ -21,7 +22,7 @@ class DocumentParserFactory:
         return parser
 
 
-DocumentParserFactory.register("pdf", PdfParser())
+DocumentParserFactory.register("pdf", DoclingPdfParser())
 DocumentParserFactory.register("docx", DocxParser())
 DocumentParserFactory.register("doc", DocxParser())
 DocumentParserFactory.register("txt", TxtParser())

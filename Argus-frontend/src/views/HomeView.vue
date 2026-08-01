@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import LoginModal from '@/components/LoginModal.vue'
@@ -18,6 +18,8 @@ function navigateToApp() {
 }
 
 // scroll reveal
+const scrollObserver = ref<IntersectionObserver | null>(null)
+
 onMounted(() => {
   nextTick(() => {
     const reveals = document.querySelectorAll('.scroll-reveal')
@@ -33,7 +35,12 @@ onMounted(() => {
       { threshold: 0.15 }
     )
     reveals.forEach((el) => obs.observe(el))
+    scrollObserver.value = obs
   })
+})
+
+onUnmounted(() => {
+  scrollObserver.value?.disconnect()
 })
 
 const features = [

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { marked, Renderer } from 'marked'
+import { sanitizeHtml } from '@/utils/sanitize'
 import { fetchDocumentPreview, downloadDocument, type DocumentItem } from '@/api/document'
 import { extractApiError } from '@/api/http'
 
@@ -57,7 +58,7 @@ watch(
         // Markdown：后端预览文本 → marked 渲染为 HTML
         const preview = await fetchDocumentPreview(doc.documentId, doc.groupId)
         const mdText = preview.previewText || '*(暂无内容)*'
-        htmlContent.value = await marked.parse(mdText)
+        htmlContent.value = sanitizeHtml(await marked.parse(mdText))
       } else {
         // txt / docx / 其他：纯文本预览
         const preview = await fetchDocumentPreview(doc.documentId, doc.groupId)

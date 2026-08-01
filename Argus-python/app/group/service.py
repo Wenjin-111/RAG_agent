@@ -31,6 +31,25 @@ def _fmt(dt) -> Optional[str]:
     return dt.isoformat() if dt else None
 
 
+async def require_group_access(
+    session: AsyncSession,
+    user_id: int,
+    system_role: str,
+    group_id: int,
+) -> None:
+    """系统管理员或群组成员可访问，否则抛出 ForbiddenException。"""
+    if system_role == "ADMIN":
+        return
+    result = await session.execute(
+        select(GroupMembership).where(
+            GroupMembership.group_id == group_id,
+            GroupMembership.user_id == user_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise ForbiddenException("无权访问该群组")
+
+
 class GroupManagementService:
     def __init__(self, session: AsyncSession):
         self.session = session

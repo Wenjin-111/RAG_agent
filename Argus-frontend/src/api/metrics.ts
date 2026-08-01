@@ -121,9 +121,9 @@ export async function fetchTrend(days = 30): Promise<TrendItem[]> {
  *
  * GET /api/admin/metrics/rank/users?period=&limit=
  */
-export async function fetchUserRank(limit = 10): Promise<UsageRankItem[]> {
+export async function fetchUserRank(limit = 10, period: Period = 'LAST_7_DAYS'): Promise<UsageRankItem[]> {
   const { data } = await http.get<ApiResponse<UsageRankItem[]>>('/admin/metrics/rankings/users', {
-    params: { limit },
+    params: { limit, period },
   })
   return unwrapApiResponse(data, '加载用户排行失败')
 }
@@ -133,9 +133,9 @@ export async function fetchUserRank(limit = 10): Promise<UsageRankItem[]> {
  *
  * GET /api/admin/metrics/rank/groups?period=&limit=
  */
-export async function fetchGroupRank(limit = 10): Promise<UsageRankItem[]> {
+export async function fetchGroupRank(limit = 10, period: Period = 'LAST_7_DAYS'): Promise<UsageRankItem[]> {
   const { data } = await http.get<ApiResponse<UsageRankItem[]>>('/admin/metrics/rankings/groups', {
-    params: { limit },
+    params: { limit, period },
   })
   return unwrapApiResponse(data, '加载群组排行失败')
 }

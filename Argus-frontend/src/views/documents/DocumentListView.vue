@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import {
@@ -270,6 +270,17 @@ onMounted(() => {
     selectedGroupId.value = appStore.visibleGroups[0]?.groupId ?? null
   } else {
     loadDocuments()
+  }
+})
+
+onUnmounted(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 })
 </script>

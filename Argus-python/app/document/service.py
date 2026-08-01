@@ -76,13 +76,16 @@ class DocumentUploadService:
         await self.session.flush()
         return {"upload_id": upload_id, "chunk_size": req.chunk_size}
 
-    async def upload_chunk(self, upload_id: str, chunk_index: int, chunk_data: bytes, chunk_hash: str) -> dict:
+    async def upload_chunk(self, user_id: int, system_role: str, upload_id: str,
+                           chunk_index: int, chunk_data: bytes, chunk_hash: str) -> dict:
         result = await self.session.execute(
             select(DocumentUploadSession).where(DocumentUploadSession.upload_id == upload_id)
         )
         session_entity = result.scalar_one_or_none()
         if session_entity is None:
             raise BusinessException("上传会话不存在或已过期")
+        if session_entity.uploader_user_id != user_id and system_role != "ADMIN":
+            raise ForbiddenException("无权操作该上传会话")
         if session_entity.status in (UPLOAD_STATUS_COMPLETED, "EXPIRED"):
             raise BusinessException("上传会话已结束")
 
@@ -113,13 +116,15 @@ class DocumentUploadService:
 
         return {"uploaded_chunks": uploaded, "status": session_entity.status}
 
-    async def complete_upload(self, user_id: int, upload_id: str) -> dict:
+    async def complete_upload(self, user_id: int, system_role: str, upload_id: str) -> dict:
         result = await self.session.execute(
             select(DocumentUploadSession).where(DocumentUploadSession.upload_id == upload_id)
         )
         session_entity = result.scalar_one_or_none()
         if session_entity is None:
             raise BusinessException("上传会话不存在或已过期")
+        if session_entity.uploader_user_id != user_id and system_role != "ADMIN":
+            raise ForbiddenException("无权操作该上传会话")
 
         session_entity.status = UPLOAD_STATUS_COMPLETING
 

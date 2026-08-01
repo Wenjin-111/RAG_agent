@@ -66,7 +66,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -99,7 +99,6 @@ app.include_router(qa_router, prefix="/api/qa", tags=["QA"])
 app.include_router(assistant_router, prefix="/api/assistant", tags=["Assistant"])
 app.include_router(metrics_router, prefix="/api/admin/metrics", tags=["Metrics"])
 app.include_router(model_config_router, prefix="/api/admin", tags=["Model Config"])
-app.include_router(document_router, prefix="/api", tags=["Documents"])
 
 
 async def _init_database(engine):

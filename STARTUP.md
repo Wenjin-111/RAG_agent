@@ -33,6 +33,9 @@ docker compose ps
 
 > **注意**：如果本机已安装 PostgreSQL 并占用 5432 端口，需先停掉本机 PG 服务，否则 Docker 端口映射会静默失败。
 
+
+管理员：net stop postgresql-x64-18
+
 ## 3. 配置 Python 后端
 
 ### 3.1 创建 Conda 环境

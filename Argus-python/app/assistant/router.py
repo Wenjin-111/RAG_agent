@@ -10,6 +10,7 @@ from app.common.security.context import AuthenticatedUser
 from app.dependencies import get_db
 from app.assistant.schemas import ChatRequest
 from app.assistant.service import AssistantService
+from app.group.service import require_group_access
 
 router = APIRouter()
 
@@ -98,6 +99,8 @@ async def chat(
     db: AsyncSession = Depends(get_db),
 ):
     service = AssistantService(db)
+    if request.group_id is not None:
+        await require_group_access(db, current_user.user_id, current_user.system_role, request.group_id)
     result = await service.chat(
         current_user.user_id, request.session_id or 0, request.message,
         request.tool_mode, request.group_id,
@@ -111,6 +114,8 @@ async def chat_stream(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if request.group_id is not None:
+        await require_group_access(db, current_user.user_id, current_user.system_role, request.group_id)
     service = AssistantService(db)
 
     async def event_generator():

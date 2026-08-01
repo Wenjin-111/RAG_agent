@@ -120,7 +120,8 @@ class QaService:
             }
 
         await self._record_usage(user_id, group_id, "qa", "/api/qa/ask",
-            len(evidence_text) // 4, len(answer) // 4, True)
+            len(evidence_text) // 1, len(answer) // 1, True,
+            model_name=chat_cfg["model_name"])
         return {
             "answered": True,
             "answer": answer,
@@ -131,7 +132,7 @@ class QaService:
 
     async def _record_usage(self, user_id: int, group_id: int, module: str,
                             endpoint: str, prompt_tokens: int, completion_tokens: int,
-                            success: bool):
+                            success: bool, model_name: Optional[str] = None):
         from app.dependencies import async_session_factory
         try:
             async with async_session_factory() as session:
@@ -142,7 +143,7 @@ class QaService:
                     completion_tokens=completion_tokens,
                     total_tokens=prompt_tokens + completion_tokens,
                     success=success, is_estimated=True,
-                    model_name=settings.chat.model_name,
+                    model_name=model_name or settings.chat.model_name,
                 )
                 await session.commit()
         except Exception:
@@ -216,6 +217,8 @@ class QaService:
 
 问题：{question}"""
 
+        parser = StreamingAnswerParser()
+        answer_text = ""
         full_content = ""
         try:
             async for chunk in chat_model.astream([
@@ -224,20 +227,27 @@ class QaService:
             ]):
                 if chunk.content:
                     full_content += chunk.content
+                    delta = parser.push(chunk.content)
+                    if delta:
+                        answer_text += delta
+                        yield {"event": "token", "data": json.dumps({"text": delta})}
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
             return
 
-        # Parse delimiter-based response format
-        logger.info("QA stream full_content (first 300 chars): %s", full_content[:300])
-        answer_text, thinking_text, _ = _parse_delimited_response(full_content.strip())
+        answer_text += parser.flush()
+        if not answer_text and full_content.strip():
+            # Delimiter tags missing entirely — fall back to off-line parse
+            answer_text, _, _ = _parse_delimited_response(full_content.strip())
         logger.info("QA stream parsed answer (first 200 chars): %s", answer_text[:200])
 
         if answer_text:
             yield {"event": "answer", "data": json.dumps({"text": answer_text})}
-        # Record usage
+        # Record usage with the actual active model name
         await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
-            len(evidence_text) // 4, len(answer_text) // 4, True)
+            len(evidence_text) // 1, len(answer_text) // 1, True,
+            model_name=chat_cfg["model_name"])
+        _, thinking_text, _ = _parse_delimited_response(full_content.strip())
         yield {"event": "citations",
                "data": json.dumps({
                    "citations": [{
@@ -253,6 +263,55 @@ class QaService:
 
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         yield {"event": "done", "data": json.dumps({"elapsed_ms": elapsed_ms})}
+
+
+class StreamingAnswerParser:
+    """Streaming parser for the <<<ANSWER>>>...<<<END>>> delimiter format.
+
+    Emits answer text as tokens arrive; holds back a short tail so a
+    multi-token <<<END>>> tag is detected instead of leaking into the answer.
+    Content after the answer section (THINKING/CITATIONS) is discarded.
+    """
+
+    ANSWER_TAG = "<<<ANSWER>>>"
+    END_TAG = "<<<END>>>"
+
+    def __init__(self):
+        self._buffer = ""
+        self._in_answer = False
+        self._done = False
+
+    def push(self, text: str) -> str:
+        if self._done:
+            return ""
+        self._buffer += text
+
+        if not self._in_answer:
+            idx = self._buffer.find(self.ANSWER_TAG)
+            if idx == -1:
+                # Keep only the tail: the tag may span multiple chunks
+                self._buffer = self._buffer[-len(self.ANSWER_TAG):]
+                return ""
+            self._buffer = self._buffer[idx + len(self.ANSWER_TAG):]
+            self._in_answer = True
+
+        end_idx = self._buffer.find(self.END_TAG)
+        if end_idx != -1:
+            self._done = True
+            emit, self._buffer = self._buffer[:end_idx], ""
+            return emit
+
+        if len(self._buffer) <= len(self.END_TAG):
+            return ""
+        emit, self._buffer = self._buffer[:-len(self.END_TAG)], self._buffer[-len(self.END_TAG):]
+        return emit
+
+    def flush(self) -> str:
+        if self._done or not self._in_answer:
+            return ""
+        self._done = True
+        emit, self._buffer = self._buffer, ""
+        return emit
 
 
 def _parse_delimited_response(text: str) -> tuple:

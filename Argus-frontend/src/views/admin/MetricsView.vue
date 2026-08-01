@@ -156,8 +156,8 @@ async function loadRanks() {
   loadingRank.value = true
   try {
     const [users, groups] = await Promise.all([
-      fetchUserRank(10),
-      fetchGroupRank(10),
+      fetchUserRank(10, selectedPeriod.value),
+      fetchGroupRank(10, selectedPeriod.value),
     ])
     userRank.value = users
     groupRank.value = groups

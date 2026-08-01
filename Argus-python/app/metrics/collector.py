@@ -13,6 +13,8 @@ PRICING = {
     "qwen-plus": {"input": 0.0008, "output": 0.002},
     "qwen-turbo": {"input": 0.0003, "output": 0.0006},
     "qwen-max": {"input": 0.02, "output": 0.06},
+    "deepseek-chat": {"input": 0.002, "output": 0.008},
+    "deepseek-reasoner": {"input": 0.002, "output": 0.008},
 }
 
 

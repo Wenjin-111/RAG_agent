@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import {
   fetchAdminUsers,
@@ -186,9 +186,13 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 // 组件挂载/卸载时注册全局键盘监听
-if (typeof window !== 'undefined') {
+onMounted(() => {
   window.addEventListener('keydown', onKeydown)
-}
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+})
 </script>
 
 <template>

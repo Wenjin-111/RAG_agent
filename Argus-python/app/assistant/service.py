@@ -104,7 +104,7 @@ class AssistantService:
         result = await self.session.execute(
             select(AssistantMessage)
             .where(AssistantMessage.session_id == session_id)
-            .order_by(AssistantMessage.created_at.desc())
+            .order_by(AssistantMessage.created_at.desc(), AssistantMessage.id.desc())
             .limit(recent_limit)
         )
         recent = []
@@ -122,7 +122,7 @@ class AssistantService:
         result = await self.session.execute(
             select(AssistantMessage)
             .where(AssistantMessage.session_id == session_id)
-            .order_by(AssistantMessage.created_at)
+            .order_by(AssistantMessage.created_at, AssistantMessage.id)
             .limit(limit)
         )
         return [

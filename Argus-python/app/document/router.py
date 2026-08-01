@@ -1,5 +1,6 @@
 import io
 import uuid
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -8,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user
 from app.common.response import ApiResponse
 from app.common.security.context import AuthenticatedUser
+from app.common.exception.exceptions import BusinessException, ForbiddenException
 from app.dependencies import get_db
 from app.document.service import DocumentUploadService, DocumentQueryService
+from app.group.service import require_group_access
 
 router = APIRouter()
 
@@ -22,6 +25,7 @@ async def list_documents(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
     service = DocumentQueryService(db)
     docs = await service.list_documents(group_id, status=status or None, file_name=file_name or None)
     return ApiResponse.ok(data=docs)
@@ -33,6 +37,7 @@ async def get_document(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await _check_document_access(db, current_user, document_id)
     service = DocumentQueryService(db)
     detail = await service.get_detail(document_id)
     return ApiResponse.ok(data=detail)
@@ -45,6 +50,7 @@ async def get_preview(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
     service = DocumentQueryService(db)
     result = await service.get_preview(document_id)
     return ApiResponse.ok(data=result)
@@ -57,12 +63,13 @@ async def download(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
     service = DocumentQueryService(db)
     data, file_name, content_type = await service.download(document_id)
     return StreamingResponse(
         io.BytesIO(data),
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(file_name)}"},
     )
 
 
@@ -73,6 +80,7 @@ async def list_chunks(
     db: AsyncSession = Depends(get_db),
 ):
     from app.ingestion.models import DocumentChunk
+    await _check_document_access(db, current_user, document_id)
     result = await db.execute(
         select(DocumentChunk)
         .where(DocumentChunk.document_id == document_id)
@@ -98,6 +106,7 @@ async def delete_document(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
     service = DocumentQueryService(db)
     await service.delete(current_user.user_id, document_id)
     return ApiResponse.ok(message="文档已删除")
@@ -113,14 +122,14 @@ async def retry_ingestion(
     from app.ingestion.models import IngestionJob
     from app.document.models import Document
 
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
+
     result = await db.execute(select(Document).where(Document.id == document_id))
     doc = result.scalar_one_or_none()
     if doc is None:
-        from app.common.exception.exceptions import BusinessException
         raise BusinessException("文档不存在")
 
     if doc.status != "FAILED":
-        from app.common.exception.exceptions import BusinessException
         raise BusinessException("只有处理失败的文档才能重试")
 
     doc.status = "UPLOADED"
@@ -146,6 +155,8 @@ async def direct_upload(
     db: AsyncSession = Depends(get_db),
 ):
     import hashlib
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
+
     file_data = await file.read()
     file_hash = hashlib.sha256(file_data).hexdigest()
     content_type = file.content_type or "application/octet-stream"
@@ -171,6 +182,7 @@ async def init_upload(
 ):
     from app.document.schemas import UploadInitRequest
     req = UploadInitRequest(**body, group_id=body.get("groupId", 0))
+    await require_group_access(db, current_user.user_id, current_user.system_role, req.group_id)
     service = DocumentUploadService(db)
     result = await service.init_upload(current_user.user_id, req)
     return ApiResponse.ok(data={
@@ -194,7 +206,9 @@ async def upload_chunk(
 ):
     chunk_data = await chunk.read()
     service = DocumentUploadService(db)
-    result = await service.upload_chunk(upload_id, chunk_index, chunk_data, chunk_hash)
+    result = await service.upload_chunk(
+        current_user.user_id, current_user.system_role, upload_id, chunk_index, chunk_data, chunk_hash
+    )
     return ApiResponse.ok(data={
         "status": result["status"],
         "uploadedChunks": list(range(result["uploaded_chunks"])),
@@ -218,6 +232,8 @@ async def get_upload_status(
     session_entity = result.scalar_one_or_none()
     if session_entity is None:
         return ApiResponse.fail("上传会话不存在")
+    if session_entity.uploader_user_id != current_user.user_id and current_user.system_role != "ADMIN":
+        raise ForbiddenException("无权操作该上传会话")
     result = await db.execute(
         select(func.count()).select_from(DocumentUploadChunk).where(
             DocumentUploadChunk.upload_id == upload_id
@@ -239,9 +255,20 @@ async def complete_upload(
     db: AsyncSession = Depends(get_db),
 ):
     service = DocumentUploadService(db)
-    result = await service.complete_upload(current_user.user_id, upload_id)
+    result = await service.complete_upload(current_user.user_id, current_user.system_role, upload_id)
     return ApiResponse.ok(data={
         "documentId": result["document_id"],
         "fileName": result["file_name"],
         "isDuplicate": result.get("is_duplicate", False),
     })
+
+
+async def _check_document_access(db: AsyncSession, current_user: AuthenticatedUser, document_id: int) -> None:
+    """按文档归属群组校验访问权限。"""
+    from app.document.models import Document
+
+    result = await db.execute(select(Document).where(Document.id == document_id, Document.deleted == False))
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise BusinessException("文档不存在")
+    await require_group_access(db, current_user.user_id, current_user.system_role, doc.group_id)

@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     server_host: str = "0.0.0.0"
     server_port: int = 10001
     debug: bool = False
+    cors_origins: list[str] = Field(
+        default=["http://localhost:5173"],
+        alias="CORS_ORIGINS",
+    )
     chat: ChatModelSettings = Field(default_factory=ChatModelSettings)
     embedding: EmbeddingModelSettings = Field(default_factory=EmbeddingModelSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)

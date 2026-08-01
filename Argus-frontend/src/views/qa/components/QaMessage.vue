@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { marked } from 'marked'
+import { sanitizeHtml } from '@/utils/sanitize'
 import type { QaMessage } from '../composables/useQaSessions'
 import type { CitationItem } from '@/api/qa'
 import CitationRail from './CitationRail.vue'
@@ -25,7 +26,7 @@ const rendered = computed(() => {
   const raw = props.message.content || ''
   if (!raw.trim()) return ''
   try {
-    return marked.parse(raw) as string
+    return sanitizeHtml(marked.parse(raw) as string)
   } catch {
     return `<p>${escapeHtml(raw)}</p>`
   }
