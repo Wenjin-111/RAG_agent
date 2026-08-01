@@ -3,7 +3,15 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { fetchGroups } from '@/api/group'
-import { streamAskQuestion, type CitationItem } from '@/api/qa'
+import {
+  streamAskQuestion,
+  fetchMyQaHistory,
+  fetchMyQaHistoryDetail,
+  deleteMyQaHistory,
+  type CitationItem,
+  type CitationMeta,
+} from '@/api/qa'
+import type { QaHistoryDetail, QaHistoryItem, QaHistoryMessage } from '@/api/admin'
 import { extractApiError } from '@/api/http'
 import type { DocumentItem } from '@/api/document'
 import DocumentPreviewModal from '@/components/DocumentPreviewModal.vue'
@@ -64,6 +72,71 @@ watch(selectedGroupId, (v) => {
 // ── Ask flow ──
 const asking = ref(false)
 
+// ── Cloud history (read-only review of persisted QA sessions) ──
+const historyItems = ref<QaHistoryItem[]>([])
+const historyLoading = ref(false)
+const historyOpen = ref(false)
+const viewingHistory = ref(false)
+const viewingHistoryId = ref<number | null>(null)
+const historyMessages = ref<QaMessage[]>([])
+const historyGroupId = ref<number | null>(null)
+
+function toQaMessage(m: QaHistoryMessage): QaMessage {
+  return {
+    id: `h-${m.messageId}`,
+    role: m.role === 'USER' ? 'user' : 'assistant',
+    content: m.content,
+    createdAt: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
+    answered: m.role === 'ASSISTANT' ? m.content.length > 0 : undefined,
+    reasonCode: m.reasonCode,
+    reasonMessage: m.reasonMessage,
+    citations: m.citations ?? [],
+  }
+}
+
+async function loadHistory() {
+  historyLoading.value = true
+  try {
+    const result = await fetchMyQaHistory(1, 50)
+    historyItems.value = result.items
+  } catch (err) {
+    console.error('Load QA history failed:', extractApiError(err, ''))
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function handleSelectHistory(sessionId: number) {
+  try {
+    const detail = await fetchMyQaHistoryDetail(sessionId)
+    historyMessages.value = detail.messages.map(toQaMessage)
+    historyGroupId.value = detail.groupId
+    viewingHistoryId.value = sessionId
+    viewingHistory.value = true
+  } catch (err) {
+    console.error('Load QA history detail failed:', extractApiError(err, ''))
+  }
+}
+
+async function handleDeleteHistory(sessionId: number) {
+  try {
+    await deleteMyQaHistory(sessionId)
+    historyItems.value = historyItems.value.filter((i) => i.sessionId !== sessionId)
+    if (viewingHistoryId.value === sessionId) {
+      exitHistory()
+    }
+  } catch (err) {
+    console.error('Delete QA history failed:', extractApiError(err, ''))
+  }
+}
+
+function exitHistory() {
+  viewingHistory.value = false
+  viewingHistoryId.value = null
+  historyMessages.value = []
+  historyGroupId.value = null
+}
+
 function ensureSessionForAsk(): string {
   if (activeSession.value && activeSession.value.groupId === selectedGroupId.value) {
     return activeSession.value.id
@@ -73,6 +146,23 @@ function ensureSessionForAsk(): string {
   return s.id
 }
 
+function appendTargetMessage(sid: string, msg: QaMessage) {
+  if (viewingHistory.value) {
+    historyMessages.value.push(msg)
+  } else {
+    appendMessage(sid, msg)
+  }
+}
+
+function updateTargetMessage(sid: string, mid: string, patch: Partial<QaMessage>) {
+  if (viewingHistory.value) {
+    const m = historyMessages.value.find((x) => x.id === mid)
+    if (m) Object.assign(m, patch)
+  } else {
+    updateMessage(sid, mid, patch)
+  }
+}
+
 async function handleAsk(text: string) {
   if (!text.trim() || selectedGroupId.value === null || asking.value) return
   if (!authStore.accessToken) {
@@ -80,7 +170,9 @@ async function handleAsk(text: string) {
     return
   }
 
-  const sessionId = ensureSessionForAsk()
+  // 云端历史续聊：消息追加到 historyMessages，后端追加到同一 qa_session
+  const isHistory = viewingHistory.value
+  const sessionId = isHistory ? String(viewingHistoryId.value) : ensureSessionForAsk()
   const now = Date.now()
 
   // Push user message
@@ -90,11 +182,11 @@ async function handleAsk(text: string) {
     content: text,
     createdAt: now,
   }
-  appendMessage(sessionId, userMsg)
+  appendTargetMessage(sessionId, userMsg)
 
   // Push pending assistant message
   const assistantId = uid()
-  appendMessage(sessionId, {
+  appendTargetMessage(sessionId, {
     id: assistantId,
     role: 'assistant',
     content: '',
@@ -105,37 +197,44 @@ async function handleAsk(text: string) {
   asking.value = true
   let streamedContent = ''
   let answerReceived = false
+  let refused: CitationMeta | null = null
   try {
     await streamAskQuestion(
       {
         groupId: selectedGroupId.value,
         question: text,
+        sessionId: isHistory ? viewingHistoryId.value : null,
       },
       authStore.accessToken!,
       {
         onToken(token: string) {
           streamedContent += token
+          updateTargetMessage(sessionId, assistantId, {
+            content: streamedContent,
+            pending: true,
+          })
         },
         onAnswer(answer: string) {
           answerReceived = true
           streamedContent = answer
-          updateMessage(sessionId, assistantId, {
+          updateTargetMessage(sessionId, assistantId, {
             content: answer,
             pending: true,
           })
         },
-        onCitations(citations: CitationItem[]) {
-          updateMessage(sessionId, assistantId, {
+        onCitations(citations: CitationItem[], meta?: CitationMeta) {
+          refused = meta?.reasonCode ? { reasonCode: meta.reasonCode, reasonMessage: meta.reasonMessage ?? null } : null
+          updateTargetMessage(sessionId, assistantId, {
             content: streamedContent,
             pending: false,
             answered: citations.length > 0 || streamedContent.length > 0,
-            reasonCode: null,
-            reasonMessage: null,
+            reasonCode: refused?.reasonCode ?? null,
+            reasonMessage: refused?.reasonMessage ?? null,
             citations,
           })
         },
         onError(message: string) {
-          updateMessage(sessionId, assistantId, {
+          updateTargetMessage(sessionId, assistantId, {
             content: streamedContent,
             pending: false,
             answered: false,
@@ -149,17 +248,17 @@ async function handleAsk(text: string) {
 
     // 兜底：没有收到 answer 事件时（解析失败），显示原始内容
     if (!answerReceived) {
-      updateMessage(sessionId, assistantId, {
+      updateTargetMessage(sessionId, assistantId, {
         content: streamedContent,
         pending: false,
-        answered: streamedContent.length > 0,
-        reasonCode: null,
-        reasonMessage: null,
+        answered: refused ? false : streamedContent.length > 0,
+        reasonCode: refused?.reasonCode ?? null,
+        reasonMessage: refused?.reasonMessage ?? null,
         citations: [],
       })
     }
   } catch (err) {
-    updateMessage(sessionId, assistantId, {
+    updateTargetMessage(sessionId, assistantId, {
       content: '',
       pending: false,
       answered: false,
@@ -173,6 +272,7 @@ async function handleAsk(text: string) {
 }
 
 function handleNewChat() {
+  exitHistory()
   createSession(selectedGroupId.value, selectedGroupName.value)
 }
 
@@ -188,7 +288,7 @@ const previewDocument = ref<DocumentItem | null>(null)
 
 function openCitation(c: CitationItem) {
   if (c.documentId === null) return
-  const groupId = activeSession.value?.groupId ?? selectedGroupId.value
+  const groupId = historyGroupId.value ?? activeSession.value?.groupId ?? selectedGroupId.value
   if (groupId === null) return
   const fileExt = extractExt(c.fileName)
   previewDocument.value = {
@@ -222,6 +322,7 @@ onMounted(() => {
   } else if (selectedGroupId.value === null) {
     selectedGroupId.value = appStore.visibleGroups[0]?.groupId ?? null
   }
+  loadHistory()
 })
 </script>
 
@@ -233,13 +334,26 @@ onMounted(() => {
       :groups-loading="groupsLoading"
       :sessions="sessions"
       :active-session-id="activeSessionId"
+      :history-items="historyItems"
+      :history-loading="historyLoading"
+      :viewing-history-id="viewingHistoryId"
       @new-chat="handleNewChat"
       @select-session="selectSession"
       @delete-session="deleteSession"
+      @view-history="handleSelectHistory"
+      @delete-history="handleDeleteHistory"
     />
 
     <main class="qa-page__main">
-      <template v-if="activeSession && activeSession.messages.length > 0">
+      <template v-if="viewingHistory && historyMessages.length > 0">
+        <QaTranscript
+          :messages="historyMessages"
+          session-id="history"
+          :group-name="'历史记录'"
+          @inspect-citation="openCitation"
+        />
+      </template>
+      <template v-else-if="activeSession && activeSession.messages.length > 0">
         <QaTranscript
           :messages="activeSession.messages"
           :session-id="activeSession.id"

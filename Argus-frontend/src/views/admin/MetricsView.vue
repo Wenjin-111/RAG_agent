@@ -89,18 +89,18 @@ const trendChart = computed(() => {
   if (trend.length === 0) return null
 
   const innerW = CHART_WIDTH - CHART_PAD_LEFT - CHART_PAD_RIGHT
-  const maxVal = Math.max(
-    ...trend.map((t) => t.requests),
-    ...trend.map((t) => t.tokens),
-    1,
-  )
+  // 双 Y 轴：调用量与 Token 各自按自己的最大值归一化，
+  // 否则 Token 量级远大于调用量时，调用量折线会被压成贴底直线
+  const maxRequests = Math.max(...trend.map((t) => t.requests), 1)
+  const maxTokens = Math.max(...trend.map((t) => t.tokens), 1)
 
   // 生成折线点
   const toX = (i: number) => CHART_PAD_LEFT + (i / Math.max(trend.length - 1, 1)) * innerW
-  const toY = (v: number) => CHART_HEIGHT - (v / maxVal) * CHART_HEIGHT
+  const toYRequests = (v: number) => CHART_HEIGHT - (v / maxRequests) * CHART_HEIGHT
+  const toYTokens = (v: number) => CHART_HEIGHT - (v / maxTokens) * CHART_HEIGHT
 
-  const requestPoints = trend.map((t, i) => `${toX(i)},${toY(t.requests)}`).join(' ')
-  const tokenPoints = trend.map((t, i) => `${toX(i)},${toY(t.tokens)}`).join(' ')
+  const requestPoints = trend.map((t, i) => `${toX(i)},${toYRequests(t.requests)}`).join(' ')
+  const tokenPoints = trend.map((t, i) => `${toX(i)},${toYTokens(t.tokens)}`).join(' ')
 
   const lastItem = trend[trend.length - 1]
   if (!lastItem) return null
@@ -110,8 +110,9 @@ const trendChart = computed(() => {
   const requestArea = `M${toX(0)},${CHART_HEIGHT} L${requestPoints} L${lastX},${CHART_HEIGHT} Z`
   const tokenArea = `M${toX(0)},${CHART_HEIGHT} L${tokenPoints} L${lastX},${CHART_HEIGHT} Z`
 
-  // Y 轴刻度
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(maxVal * f))
+  // 双轴刻度：左轴（调用量）、右轴（Token）
+  const yTicksRequests = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(maxRequests * f))
+  const yTicksTokens = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(maxTokens * f))
 
   // X 轴标签（稀疏采样）
   const xLabels: { x: number; label: string }[] = []
@@ -130,11 +131,12 @@ const trendChart = computed(() => {
     tokenPoints,
     requestArea,
     tokenArea,
-    yTicks,
+    yTicksRequests,
+    yTicksTokens,
     xLabels,
     lastX,
-    lastYRequest: toY(lastItem.requests),
-    lastYToken: toY(lastItem.tokens),
+    lastYRequest: toYRequests(lastItem.requests),
+    lastYToken: toYTokens(lastItem.tokens),
     gridYs: [0, 0.25, 0.5, 0.75, 1].map((f) => CHART_HEIGHT - f * CHART_HEIGHT),
   }
 })
@@ -265,9 +267,9 @@ onMounted(() => {
         </div>
 
         <div class="trend-chart-body">
-          <!-- Y 轴 -->
+          <!-- 左轴：调用量 -->
           <div class="trend-y-axis">
-            <span v-for="tick in trendChart.yTicks.slice().reverse()" :key="tick">
+            <span v-for="tick in trendChart.yTicksRequests.slice().reverse()" :key="'r' + tick">
               {{ tick >= 10000 ? (tick / 1000).toFixed(0) + 'k' : tick.toLocaleString() }}
             </span>
           </div>
@@ -324,6 +326,12 @@ onMounted(() => {
                 :style="{ left: (xl.x / 900) * 100 + '%' }"
               >{{ xl.label }}</span>
             </div>
+          </div>
+          <!-- 右轴：Token -->
+          <div class="trend-y-axis trend-y-axis--right">
+            <span v-for="tick in trendChart.yTicksTokens.slice().reverse()" :key="'t' + tick">
+              {{ tick >= 10000 ? (tick / 1000).toFixed(0) + 'k' : tick.toLocaleString() }}
+            </span>
           </div>
         </div>
       </div>
@@ -657,6 +665,11 @@ onMounted(() => {
   text-align: right;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.trend-y-axis--right {
+  text-align: left;
+  min-width: 44px;
 }
 
 .trend-svg-wrap {

@@ -1,23 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { marked, Renderer } from 'marked'
-import { sanitizeHtml } from '@/utils/sanitize'
+import { markdownToHtml } from '@/utils/markdown'
 import { fetchDocumentPreview, downloadDocument, type DocumentItem } from '@/api/document'
 import { extractApiError } from '@/api/http'
-
-// ── marked 配置：启用 GFM、换行转换、代码高亮基础支持 ──
-marked.use({
-  gfm: true,
-  breaks: true,
-})
-
-const renderer = new Renderer()
-// 链接在新窗口打开
-renderer.link = function ({ href, title, text }) {
-  const titleAttr = title ? ` title="${title}"` : ''
-  return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`
-}
-marked.use({ renderer })
 
 const props = defineProps<{
   visible: boolean
@@ -55,10 +40,10 @@ watch(
         const blob = await downloadDocument(doc.documentId, doc.groupId)
         pdfUrl.value = URL.createObjectURL(blob)
       } else if (ext === 'md' || ext === 'markdown') {
-        // Markdown：后端预览文本 → marked 渲染为 HTML
+        // Markdown：后端预览文本 → marked 渲染为 HTML（含 LaTeX 公式）
         const preview = await fetchDocumentPreview(doc.documentId, doc.groupId)
         const mdText = preview.previewText || '*(暂无内容)*'
-        htmlContent.value = sanitizeHtml(await marked.parse(mdText))
+        htmlContent.value = markdownToHtml(mdText)
       } else {
         // txt / docx / 其他：纯文本预览
         const preview = await fetchDocumentPreview(doc.documentId, doc.groupId)

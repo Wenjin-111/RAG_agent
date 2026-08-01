@@ -1,4 +1,5 @@
-import http from './http'
+import http, { type ApiResponse } from './http'
+import type { QaHistoryDetail, QaHistoryItem } from './admin'
 
 // ─────────────────────────────────────────────
 // 类型定义
@@ -32,6 +33,8 @@ export interface AskQuestionPayload {
   groupId: number
   /** 用户问题文本 */
   question: string
+  /** 云端历史会话 ID：传入则在已有会话上追加问答，否则新建会话 */
+  sessionId?: number | null
 }
 
 /**
@@ -58,6 +61,14 @@ export interface AskQuestionResponse {
 }
 
 /**
+ * 引用事件的附加元信息（证据不足拒答时携带）
+ */
+export interface CitationMeta {
+  reasonCode?: string | null
+  reasonMessage?: string | null
+}
+
+/**
  * 流式问答事件处理器
  * 对应 SSE 推送的三种事件类型
  */
@@ -66,8 +77,8 @@ export interface QaStreamHandlers {
   onToken: (text: string) => void
   /** 流式结束后接收到的干净回答文本（已从 JSON 中提取） */
   onAnswer: (text: string) => void
-  /** 流式回答结束后接收到的引用来源列表 */
-  onCitations: (citations: CitationItem[]) => void
+  /** 流式回答结束后接收到的引用来源列表（证据不足时携带拒答原因） */
+  onCitations: (citations: CitationItem[], meta?: CitationMeta) => void
   /** 发生错误时回调 */
   onError: (message: string) => void
   /** 可用于中断流式连接的 AbortSignal */
@@ -161,6 +172,44 @@ export async function streamAskQuestion(
 }
 
 // ─────────────────────────────────────────────
+// 我的问答历史（云端持久化）
+// ─────────────────────────────────────────────
+
+/**
+ * 获取当前用户的历史问答列表（分页）
+ *
+ * GET /api/qa/sessions?page=&limit=
+ */
+export async function fetchMyQaHistory(page = 1, limit = 30): Promise<{ items: QaHistoryItem[]; total: number }> {
+  const { data } = await http.get<ApiResponse<{ items: QaHistoryItem[]; total: number }>>('/qa/sessions', {
+    params: { page, limit },
+  })
+  if (!data.success || data.data == null) throw new Error(data.message ?? '加载问答历史失败')
+  return data.data
+}
+
+/**
+ * 获取我的问答详情
+ *
+ * GET /api/qa/sessions/{sessionId}
+ */
+export async function fetchMyQaHistoryDetail(sessionId: number): Promise<QaHistoryDetail> {
+  const { data } = await http.get<ApiResponse<QaHistoryDetail>>(`/qa/sessions/${sessionId}`)
+  if (!data.success || data.data == null) throw new Error(data.message ?? '加载问答详情失败')
+  return data.data
+}
+
+/**
+ * 删除我的问答记录
+ *
+ * DELETE /api/qa/sessions/{sessionId}
+ */
+export async function deleteMyQaHistory(sessionId: number): Promise<void> {
+  const { data } = await http.delete<ApiResponse<null>>(`/qa/sessions/${sessionId}`)
+  if (!data.success) throw new Error(data.message ?? '删除失败')
+}
+
+// ─────────────────────────────────────────────
 // 内部工具函数
 // ─────────────────────────────────────────────
 
@@ -210,9 +259,15 @@ function dispatchQaSseEvent(rawEvent: string, handlers: QaStreamHandlers): void 
   const rawData = dataLines.join('\n')
 
   switch (eventName) {
-    case 'token':
-      handlers.onToken(rawData)
+    case 'token': {
+      try {
+        const parsed = JSON.parse(rawData) as { text?: string }
+        handlers.onToken(parsed.text ?? rawData)
+      } catch {
+        handlers.onToken(rawData)
+      }
       break
+    }
     case 'answer':
       try {
         const parsed = JSON.parse(rawData) as { text: string }
@@ -225,7 +280,10 @@ function dispatchQaSseEvent(rawEvent: string, handlers: QaStreamHandlers): void 
       try {
         const parsed = JSON.parse(rawData)
         const citations = (parsed.citations ?? parsed) as CitationItem[]
-        handlers.onCitations(citations)
+        handlers.onCitations(citations, {
+          reasonCode: parsed.reasonCode ?? null,
+          reasonMessage: parsed.reasonMessage ?? null,
+        })
       } catch {
         handlers.onCitations([])
       }

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { marked } from 'marked'
-import { sanitizeHtml } from '@/utils/sanitize'
+import { markdownToHtml } from '@/utils/markdown'
 import type { QaMessage } from '../composables/useQaSessions'
 import type { CitationItem } from '@/api/qa'
 import CitationRail from './CitationRail.vue'
@@ -14,30 +13,12 @@ const emit = defineEmits<{
   'inspect-citation': [citation: CitationItem]
 }>()
 
-marked.setOptions({
-  gfm: true,
-  breaks: true,
-})
-
 const rendered = computed(() => {
   if (props.message.role === 'user') {
     return ''
   }
-  const raw = props.message.content || ''
-  if (!raw.trim()) return ''
-  try {
-    return sanitizeHtml(marked.parse(raw) as string)
-  } catch {
-    return `<p>${escapeHtml(raw)}</p>`
-  }
+  return markdownToHtml(props.message.content || '')
 })
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => {
-    const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
-    return map[c] ?? c
-  })
-}
 
 function formatTime(ts: number): string {
   const d = new Date(ts)

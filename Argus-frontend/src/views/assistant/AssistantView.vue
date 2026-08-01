@@ -6,12 +6,16 @@ import { useAuthStore } from '@/stores/auth'
 import { fetchGroups } from '@/api/group'
 import { extractApiError } from '@/api/http'
 import {
+  archiveAssistantSession,
   createAssistantSession,
   deleteAssistantSession,
   fetchAssistantSessions,
   fetchAssistantSessionDetail,
   fetchAssistantConversationContext,
+  fetchAssistantMessages,
+  refreshAssistantSummary,
   renameAssistantSession,
+  restoreAssistantSession,
   streamAssistantMessage,
 } from '@/api/assistant'
 import type {
@@ -34,10 +38,20 @@ const authStore = useAuthStore()
 
 // ── Sessions ──
 const sessions = ref<AssistantSessionListItem[]>([])
+const archivedSessions = ref<AssistantSessionListItem[]>([])
 const activeSessionId = ref<number | null>(null)
 const sessionsLoading = ref(false)
 const messages = ref<UiAssistantMessage[]>([])
 const loadingHistory = ref(false)
+
+// ── Message pagination ──
+const hasMoreOlder = ref(false)
+const loadingOlder = ref(false)
+
+// ── Memory summary card ──
+const summaryText = ref('')
+const summaryUpdatedAt = ref<string | null>(null)
+const summaryLoading = ref(false)
 
 const activeSession = computed(() =>
   sessions.value.find((s) => s.sessionId === activeSessionId.value) ?? null,
@@ -98,15 +112,61 @@ async function loadGroupsIfNeeded() {
 
 async function loadSessionHistory(sessionId: number) {
   loadingHistory.value = true
+  hasMoreOlder.value = false
+  summaryText.value = ''
+  summaryUpdatedAt.value = null
   try {
-    // Prefer context endpoint — returns recent messages (asc by time), plenty for UI.
-    const ctx = await fetchAssistantConversationContext(sessionId, 50)
-    messages.value = (ctx.recentMessages ?? []).map(toUi)
+    const [page, ctx] = await Promise.all([
+      fetchAssistantMessages(sessionId),
+      fetchAssistantConversationContext(sessionId, 12),
+    ])
+    messages.value = page.items.map(toUi)
+    hasMoreOlder.value = page.hasMore
+    summaryText.value = ctx.summaryText ?? ''
+    summaryUpdatedAt.value = ctx.summaryUpdatedAt ?? null
   } catch (err) {
     console.error('Load session history failed:', extractApiError(err, ''))
     messages.value = []
   } finally {
     loadingHistory.value = false
+  }
+}
+
+async function loadOlderMessages() {
+  if (activeSessionId.value === null || loadingOlder.value || !hasMoreOlder.value) return
+  const firstId = messages.value[0]?.messageId
+  if (firstId == null) return
+  loadingOlder.value = true
+  try {
+    const page = await fetchAssistantMessages(activeSessionId.value, firstId)
+    messages.value = [...page.items.map(toUi), ...messages.value]
+    hasMoreOlder.value = page.hasMore
+  } catch (err) {
+    console.error('Load older messages failed:', extractApiError(err, ''))
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+async function handleRefreshSummary() {
+  if (activeSessionId.value === null || summaryLoading.value) return
+  summaryLoading.value = true
+  try {
+    const { summaryText: text } = await refreshAssistantSummary(activeSessionId.value)
+    summaryText.value = text
+    summaryUpdatedAt.value = new Date().toISOString()
+  } catch (err) {
+    console.error('Refresh summary failed:', extractApiError(err, ''))
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+async function loadArchived() {
+  try {
+    archivedSessions.value = await fetchAssistantSessions('ARCHIVED')
+  } catch (err) {
+    console.error('Load archived sessions failed:', extractApiError(err, ''))
   }
 }
 
@@ -159,12 +219,39 @@ async function handleDeleteSession(id: number) {
   try {
     await deleteAssistantSession(id)
     sessions.value = sessions.value.filter((s) => s.sessionId !== id)
+    archivedSessions.value = archivedSessions.value.filter((s) => s.sessionId !== id)
     if (activeSessionId.value === id) {
       activeSessionId.value = null
       messages.value = []
     }
   } catch (err) {
     console.error('Delete session failed:', extractApiError(err, '删除失败'))
+  }
+}
+
+async function handleArchiveSession(id: number) {
+  const target = sessions.value.find((s) => s.sessionId === id)
+  if (!target) return
+  try {
+    await archiveAssistantSession(id)
+    sessions.value = sessions.value.filter((s) => s.sessionId !== id)
+    if (activeSessionId.value === id) {
+      activeSessionId.value = null
+      messages.value = []
+    }
+    await loadArchived()
+  } catch (err) {
+    console.error('Archive session failed:', extractApiError(err, '归档失败'))
+  }
+}
+
+async function handleRestoreSession(id: number) {
+  try {
+    await restoreAssistantSession(id)
+    archivedSessions.value = archivedSessions.value.filter((s) => s.sessionId !== id)
+    await loadSessions(true)
+  } catch (err) {
+    console.error('Restore session failed:', extractApiError(err, '恢复失败'))
   }
 }
 
@@ -377,7 +464,7 @@ function openCitation(c: AssistantCitationItem) {
 
 // ── Init ──
 onMounted(async () => {
-  await Promise.all([loadSessions(), loadGroupsIfNeeded()])
+  await Promise.all([loadSessions(), loadArchived(), loadGroupsIfNeeded()])
   if (sessions.value.length > 0 && activeSessionId.value === null) {
     const firstSession = sessions.value[0]
     if (firstSession) {
@@ -396,12 +483,15 @@ onMounted(async () => {
   <div class="asst-page">
     <AssistantSidebar
       :sessions="sessions"
+      :archived-sessions="archivedSessions"
       :active-session-id="activeSessionId"
       :loading="sessionsLoading"
       @new-session="handleNewSession"
       @select-session="handleSelectSession"
       @rename-session="handleRenameSession"
       @delete-session="handleDeleteSession"
+      @archive-session="handleArchiveSession"
+      @restore-session="handleRestoreSession"
       @refresh="() => loadSessions()"
     />
 
@@ -414,9 +504,16 @@ onMounted(async () => {
           :mode="mode"
           :group-name="selectedGroupName"
           :loading-history="loadingHistory"
+          :has-more-older="hasMoreOlder"
+          :loading-older="loadingOlder"
+          :summary-text="summaryText"
+          :summary-updated-at="summaryUpdatedAt"
+          :summary-loading="summaryLoading"
           @update:mode="(m) => (mode = m)"
           @inspect-citation="openCitation"
           @retry="handleRetry"
+          @load-older="loadOlderMessages"
+          @refresh-summary="handleRefreshSummary"
         />
       </template>
       <template v-else>

@@ -55,6 +55,24 @@ const router = createRouter({
           meta: { title: '协作小组' },
         },
         {
+          path: 'admin/documents',
+          name: 'admin-documents',
+          component: () => import('../views/admin/AdminDocumentsView.vue'),
+          meta: { title: '文档管理', requireAdmin: true },
+        },
+        {
+          path: 'admin/groups',
+          name: 'admin-groups',
+          component: () => import('../views/admin/AdminGroupsView.vue'),
+          meta: { title: '群组管理', requireAdmin: true },
+        },
+        {
+          path: 'admin/qa',
+          name: 'admin-qa',
+          component: () => import('../views/admin/AdminQaHistoryView.vue'),
+          meta: { title: '问答历史', requireAdmin: true },
+        },
+        {
           path: 'admin/users',
           name: 'admin-users',
           component: () => import('../views/admin/UserManagementView.vue'),
@@ -65,6 +83,24 @@ const router = createRouter({
           name: 'admin-metrics',
           component: () => import('../views/admin/MetricsView.vue'),
           meta: { title: '使用统计', requireAdmin: true },
+        },
+        {
+          path: 'admin/insights',
+          name: 'admin-insights',
+          component: () => import('../views/admin/AdminInsightsView.vue'),
+          meta: { title: '数据洞察', requireAdmin: true },
+        },
+        {
+          path: 'admin/health',
+          name: 'admin-health',
+          component: () => import('../views/admin/AdminHealthView.vue'),
+          meta: { title: '系统健康', requireAdmin: true },
+        },
+        {
+          path: 'admin/audit',
+          name: 'admin-audit',
+          component: () => import('../views/admin/AdminAuditView.vue'),
+          meta: { title: '审计日志', requireAdmin: true },
         },
         {
           path: 'settings',

@@ -4,6 +4,7 @@ import type { AssistantSessionListItem } from '@/types/assistant'
 
 const props = defineProps<{
   sessions: AssistantSessionListItem[]
+  archivedSessions: AssistantSessionListItem[]
   activeSessionId: number | null
   loading: boolean
 }>()
@@ -13,8 +14,12 @@ const emit = defineEmits<{
   'select-session': [sessionId: number]
   'rename-session': [sessionId: number, title: string]
   'delete-session': [sessionId: number]
+  'archive-session': [sessionId: number]
+  'restore-session': [sessionId: number]
   refresh: []
 }>()
+
+const showArchived = ref(false)
 
 const editingId = ref<number | null>(null)
 const editingTitle = ref('')
@@ -161,6 +166,18 @@ function formatRelative(iso: string | null): string {
                 </svg>
               </button>
               <button
+                class="asst-sidebar__ibtn"
+                title="归档"
+                type="button"
+                @click.stop="emit('archive-session', s.sessionId)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="21 8 21 21 3 21 3 8" />
+                  <rect x="1" y="3" width="22" height="5" />
+                  <line x1="10" y1="12" x2="14" y2="12" />
+                </svg>
+              </button>
+              <button
                 class="asst-sidebar__ibtn asst-sidebar__ibtn--danger"
                 title="删除"
                 type="button"
@@ -186,6 +203,66 @@ function formatRelative(iso: string | null): string {
         <p>暂无会话</p>
         <small>点击上方"新建会话"开启一次对话</small>
       </div>
+    </div>
+
+    <!-- Archived sessions -->
+    <div class="asst-sidebar__archived">
+      <button
+        class="asst-sidebar__archived-toggle"
+        type="button"
+        :class="{ 'is-open': showArchived }"
+        @click="showArchived = !showArchived"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="21 8 21 21 3 21 3 8" />
+          <rect x="1" y="3" width="22" height="5" />
+          <line x1="10" y1="12" x2="14" y2="12" />
+        </svg>
+        <span>已归档</span>
+        <span class="asst-sidebar__archived-count">{{ archivedSessions.length }}</span>
+        <svg class="asst-sidebar__archived-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      <ul v-if="showArchived && archivedSessions.length > 0" class="asst-sidebar__list asst-sidebar__list--archived">
+        <li v-for="s in archivedSessions" :key="s.sessionId">
+          <div class="asst-sidebar__item">
+            <span class="asst-sidebar__item-bar" />
+            <div class="asst-sidebar__item-body">
+              <span class="asst-sidebar__item-title" :title="s.title">{{ s.title }}</span>
+              <span class="asst-sidebar__item-meta">
+                <span class="asst-sidebar__item-time">{{ formatRelative(s.lastMessageAt) }}</span>
+              </span>
+            </div>
+            <div class="asst-sidebar__item-actions">
+              <button
+                class="asst-sidebar__ibtn"
+                title="恢复"
+                type="button"
+                @click.stop="emit('restore-session', s.sessionId)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="1 4 1 10 7 10" />
+                  <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                </svg>
+              </button>
+              <button
+                class="asst-sidebar__ibtn asst-sidebar__ibtn--danger"
+                title="删除"
+                type="button"
+                @click.stop="emit('delete-session', s.sessionId)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </li>
+      </ul>
+      <p v-else-if="showArchived" class="asst-sidebar__archived-empty">暂无归档会话</p>
     </div>
 
     <!-- Footer tip -->
@@ -607,5 +684,67 @@ function formatRelative(iso: string | null): string {
   height: 6px;
   border-radius: 50%;
   background: var(--brand-accent);
+}
+
+/* Archived section */
+.asst-sidebar__archived {
+  border-top: 1px dashed var(--border-default);
+  padding-top: 8px;
+}
+
+.asst-sidebar__archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.asst-sidebar__archived-toggle:hover {
+  background: rgba(74, 144, 217, 0.06);
+  color: var(--text-primary);
+}
+
+.asst-sidebar__archived-toggle.is-open {
+  color: var(--brand-primary);
+}
+
+.asst-sidebar__archived-count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  padding: 1px 7px;
+  border-radius: 100px;
+}
+
+.asst-sidebar__archived-caret {
+  margin-left: auto;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.asst-sidebar__archived-toggle.is-open .asst-sidebar__archived-caret {
+  transform: rotate(180deg);
+}
+
+.asst-sidebar__list--archived {
+  margin-top: 4px;
+}
+
+.asst-sidebar__archived-empty {
+  padding: 8px 12px;
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 </style>

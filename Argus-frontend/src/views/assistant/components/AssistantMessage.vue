@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { marked } from 'marked'
-import { sanitizeHtml } from '@/utils/sanitize'
+import { markdownToHtml } from '@/utils/markdown'
 import type { AssistantCitationItem, AssistantMessageRole, AssistantToolMode } from '@/types/assistant'
 import AssistantCitationBar from './AssistantCitationBar.vue'
 
@@ -28,17 +27,9 @@ const emit = defineEmits<{
   retry: []
 }>()
 
-marked.setOptions({ gfm: true, breaks: true })
-
 const rendered = computed(() => {
   if (props.message.role === 'USER' || props.message.role === 'TOOL') return ''
-  const raw = props.message.content || ''
-  if (!raw.trim()) return ''
-  try {
-    return sanitizeHtml(marked.parse(raw) as string)
-  } catch {
-    return escapeHtml(raw)
-  }
+  return markdownToHtml(props.message.content || '')
 })
 
 const toolPayload = computed(() => {

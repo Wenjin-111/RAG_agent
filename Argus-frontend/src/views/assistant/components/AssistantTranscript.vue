@@ -9,13 +9,27 @@ const props = defineProps<{
   mode: AssistantToolMode
   groupName: string
   loadingHistory: boolean
+  hasMoreOlder: boolean
+  loadingOlder: boolean
+  summaryText: string
+  summaryUpdatedAt: string | null
+  summaryLoading: boolean
 }>()
 
 const emit = defineEmits<{
   'update:mode': [mode: AssistantToolMode]
   'inspect-citation': [citation: AssistantCitationItem]
   retry: []
+  'load-older': []
+  'refresh-summary': []
 }>()
+
+function formatSummaryTime(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 const scrollRef = ref<HTMLElement | null>(null)
 const isAtBottom = ref(true)
@@ -82,15 +96,64 @@ watch(
         <span>加载历史消息…</span>
       </div>
 
-      <div v-else class="atx__thread">
-        <AssistantMessage
-          v-for="m in messages"
-          :key="m.localId"
-          :message="m"
-          @inspect-citation="(c) => emit('inspect-citation', c)"
-          @retry="emit('retry')"
-        />
-      </div>
+      <template v-else>
+        <!-- Load older messages -->
+        <div v-if="hasMoreOlder" class="atx__load-older">
+          <button
+            class="atx__load-older-btn"
+            type="button"
+            :disabled="loadingOlder"
+            @click="emit('load-older')"
+          >
+            <span v-if="loadingOlder" class="atx__loading-ring atx__loading-ring--sm" />
+            {{ loadingOlder ? '加载中…' : '加载更早消息' }}
+          </button>
+        </div>
+
+        <!-- Memory summary card -->
+        <div v-if="messages.length > 0" class="atx__memory-card">
+          <div class="atx__memory-head">
+            <span class="atx__memory-title">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path d="M6.5 2H20V22H6.5A2.5 2.5 0 0 1 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2Z" />
+              </svg>
+              AI 记住了什么
+            </span>
+            <span class="atx__memory-meta">
+              <span v-if="summaryUpdatedAt" class="atx__memory-time">
+                更新于 {{ formatSummaryTime(summaryUpdatedAt) }}
+              </span>
+              <button
+                class="atx__memory-refresh"
+                type="button"
+                :disabled="summaryLoading"
+                @click="emit('refresh-summary')"
+              >
+                <svg :class="{ 'is-spinning': summaryLoading }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+                {{ summaryLoading ? '生成中…' : '刷新摘要' }}
+              </button>
+            </span>
+          </div>
+          <p v-if="summaryText" class="atx__memory-text">{{ summaryText }}</p>
+          <p v-else class="atx__memory-text atx__memory-text--empty">
+            暂无记忆摘要——对话超过 20 条后会自动生成，也可以点击"刷新摘要"立即生成。
+          </p>
+        </div>
+
+        <div class="atx__thread">
+          <AssistantMessage
+            v-for="m in messages"
+            :key="m.localId"
+            :message="m"
+            @inspect-citation="(c) => emit('inspect-citation', c)"
+            @retry="emit('retry')"
+          />
+        </div>
+      </template>
     </div>
 
     <!-- Scroll-to-bottom fab -->
@@ -248,6 +311,127 @@ watch(
 
 @keyframes atx-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Load older */
+.atx__load-older {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0 4px;
+}
+
+.atx__load-older-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 18px;
+  border: 1px solid var(--border-default);
+  border-radius: 100px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.atx__load-older-btn:hover:not(:disabled) {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.atx__load-older-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.atx__loading-ring--sm {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+/* Memory summary card */
+.atx__memory-card {
+  margin: 12px 24px 4px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, rgba(74, 144, 217, 0.05), rgba(92, 201, 193, 0.05));
+  border: 1px solid rgba(74, 144, 217, 0.18);
+  border-radius: 10px;
+}
+
+.atx__memory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.atx__memory-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Poppins', 'Noto Sans SC', sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--brand-primary);
+}
+
+.atx__memory-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.atx__memory-time {
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}
+
+.atx__memory-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid rgba(74, 144, 217, 0.25);
+  border-radius: 100px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--brand-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.atx__memory-refresh:hover:not(:disabled) {
+  background: rgba(74, 144, 217, 0.06);
+}
+
+.atx__memory-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.atx__memory-refresh svg.is-spinning {
+  animation: atx-spin 0.9s linear infinite;
+}
+
+.atx__memory-text {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.atx__memory-text--empty {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 /* Scroll-to-bottom */

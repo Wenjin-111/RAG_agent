@@ -80,6 +80,8 @@ export interface AssistantSessionListItem {
   sessionId: number
   /** 会话标题（创建时默认为"新会话"，可后续重命名） */
   title: string
+  /** 会话状态：ACTIVE / ARCHIVED */
+  status?: string
   /** 最后一条消息的时间（ISO 8601 字符串），可能为空（会话无消息时） */
   lastMessageAt: string | null
 }
@@ -164,8 +166,25 @@ export interface AssistantMessageItem {
 export interface AssistantConversationContext {
   /** LLM 生成的对话摘要文本，无消息时为空 */
   summaryText: string | null
+  /** 摘要最后更新时间（ISO 8601），未生成过摘要时为空 */
+  summaryUpdatedAt: string | null
   /** 最近的消息列表（按时间升序，最多 recentLimit 条） */
   recentMessages: AssistantMessageItem[]
+}
+
+/**
+ * 消息分页结果
+ *
+ * 游标分页：`nextBeforeId` 传给下一次请求的 beforeId 即可加载更早的消息。
+ * 消息按时间升序排列（旧 → 新）。
+ */
+export interface AssistantMessagesPage {
+  /** 当前页消息（按时间升序） */
+  items: AssistantMessageItem[]
+  /** 是否还有更早的消息 */
+  hasMore: boolean
+  /** 加载更早消息时传给 beforeId 的游标，没有更早消息时为 null */
+  nextBeforeId: number | null
 }
 
 // ─────────────────────────────────────────────

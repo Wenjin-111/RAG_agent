@@ -96,6 +96,12 @@ const activeMenu = computed(() => {
   if (path.startsWith('/app/qa')) return 'qa'
   if (path.startsWith('/app/assistant')) return 'assistant'
   if (path.startsWith('/app/groups')) return 'groups'
+  if (path.startsWith('/app/admin/documents')) return 'admin-documents'
+  if (path.startsWith('/app/admin/groups')) return 'admin-groups'
+  if (path.startsWith('/app/admin/qa')) return 'admin-qa'
+  if (path.startsWith('/app/admin/insights')) return 'insights'
+  if (path.startsWith('/app/admin/health')) return 'health'
+  if (path.startsWith('/app/admin/audit')) return 'audit'
   if (path.startsWith('/app/admin/metrics')) return 'metrics'
   if (path.startsWith('/app/admin')) return 'admin'
   if (path.startsWith('/app/settings')) return 'settings'
@@ -144,6 +150,27 @@ const menuItems = computed(() =>
 
 const allBottomItems = [
   {
+    key: 'admin-documents',
+    label: '文档管理',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14 2H7C5.89543 2 5 2.89543 5 4V20C5 21.1046 5.89543 22 7 22H17C18.1046 22 19 21.1046 19 20V7L14 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 2V7H19" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
+    path: '/app/admin/documents',
+    roles: ['ADMIN'] as const,
+  },
+  {
+    key: 'admin-groups',
+    label: '群组管理',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="7" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="7" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M2 20V19C2 16.7909 3.79086 15 6 15H10C12.2091 15 14 16.7909 14 19V20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M14 15H16C18.2091 15 20 16.7909 20 19V20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    path: '/app/admin/groups',
+    roles: ['ADMIN'] as const,
+  },
+  {
+    key: 'admin-qa',
+    label: '问答历史',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><line x1="9" y1="10" x2="15" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    path: '/app/admin/qa',
+    roles: ['ADMIN'] as const,
+  },
+  {
     key: 'admin',
     label: '用户管理',
     icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="4" stroke="currentColor" stroke-width="1.5"/><path d="M12 8V12L15 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
@@ -155,6 +182,27 @@ const allBottomItems = [
     label: '使用统计',
     icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M3 3V16C3 17.1046 3.89543 18 5 18H19C20.1046 18 21 17.1046 21 16V8C21 6.89543 20.1046 6 19 6H12L10 3H5C3.89543 3 3 3.89543 3 5V3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 14L10 10L13 12L17 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     path: '/app/admin/metrics',
+    roles: ['ADMIN'] as const,
+  },
+  {
+    key: 'insights',
+    label: '数据洞察',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M18 20V10M12 20V4M6 20v-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+    path: '/app/admin/insights',
+    roles: ['ADMIN'] as const,
+  },
+  {
+    key: 'health',
+    label: '系统健康',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    path: '/app/admin/health',
+    roles: ['ADMIN'] as const,
+  },
+  {
+    key: 'audit',
+    label: '审计日志',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+    path: '/app/admin/audit',
     roles: ['ADMIN'] as const,
   },
   {

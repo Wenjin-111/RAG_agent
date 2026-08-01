@@ -4,6 +4,7 @@ import type {
   AssistantChatResult,
   AssistantChatStreamEvent,
   AssistantConversationContext,
+  AssistantMessagesPage,
   AssistantSessionDetail,
   AssistantSessionListItem,
 } from '../types/assistant'
@@ -32,15 +33,87 @@ export async function createAssistantSession(): Promise<AssistantSessionDetail> 
 /**
  * 获取当前用户的会话列表
  *
- * GET /api/assistant/sessions
+ * GET /api/assistant/sessions?status=ACTIVE
  *
  * 后端直接返回数组（非 ApiResponse 包裹），按最后消息时间降序排列。
  *
+ * @param status 会话状态过滤：ACTIVE（默认）/ ARCHIVED
  * @returns 会话简要信息列表
  */
-export async function fetchAssistantSessions(): Promise<AssistantSessionListItem[]> {
-  const { data } = await http.get<AssistantSessionListItem[]>('/assistant/sessions')
+export async function fetchAssistantSessions(status: 'ACTIVE' | 'ARCHIVED' = 'ACTIVE'): Promise<AssistantSessionListItem[]> {
+  const { data } = await http.get<AssistantSessionListItem[]>('/assistant/sessions', {
+    params: { status },
+  })
   return data
+}
+
+/**
+ * 归档会话
+ *
+ * POST /api/assistant/sessions/{sessionId}/archive
+ *
+ * 仅改变会话状态，消息保留，可从归档列表恢复。
+ */
+export async function archiveAssistantSession(sessionId: number): Promise<void> {
+  const { data } = await http.post<ApiResponse<null>>(`/assistant/sessions/${sessionId}/archive`)
+  if (!data.success) {
+    throw new Error(data.message ?? '归档失败')
+  }
+}
+
+/**
+ * 恢复已归档会话
+ *
+ * POST /api/assistant/sessions/{sessionId}/restore
+ *
+ * 将 ARCHIVED 状态的会话恢复为 ACTIVE，回到主列表。
+ */
+export async function restoreAssistantSession(sessionId: number): Promise<void> {
+  const { data } = await http.post<ApiResponse<null>>(`/assistant/sessions/${sessionId}/restore`)
+  if (!data.success) {
+    throw new Error(data.message ?? '恢复失败')
+  }
+}
+
+/**
+ * 强制重新生成会话摘要
+ *
+ * POST /api/assistant/sessions/{sessionId}/summarize
+ *
+ * 用于记忆可视化卡片中的"刷新摘要"按钮。
+ */
+export async function refreshAssistantSummary(sessionId: number): Promise<{ summaryText: string }> {
+  const { data } = await http.post<ApiResponse<{ summaryText: string }>>(`/assistant/sessions/${sessionId}/summarize`)
+  if (!data.success || data.data == null) {
+    throw new Error(data.message ?? '生成摘要失败')
+  }
+  return data.data
+}
+
+/**
+ * 分页获取会话消息
+ *
+ * GET /api/assistant/sessions/{sessionId}/messages?beforeId=&limit=
+ *
+ * 游标分页：首次不传 beforeId 取最近 limit 条；加载更早消息时
+ * 传入上一页返回的 nextBeforeId。
+ *
+ * @param sessionId 会话 ID
+ * @param beforeId 游标（加载更早消息时传入）
+ * @param limit 每页条数，默认 30
+ */
+export async function fetchAssistantMessages(
+  sessionId: number,
+  beforeId?: number,
+  limit = 30,
+): Promise<AssistantMessagesPage> {
+  const { data } = await http.get<ApiResponse<AssistantMessagesPage>>(`/assistant/sessions/${sessionId}/messages`, {
+    params: { beforeId, limit },
+  })
+  if (!data.success || data.data == null) {
+    throw new Error(data.message ?? '加载消息失败')
+  }
+  return data.data
 }
 
 /**

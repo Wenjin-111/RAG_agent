@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { VisibleGroup } from '@/stores/app'
 import type { QaSession } from '../composables/useQaSessions'
+import type { QaHistoryItem } from '@/api/admin'
 
 const props = defineProps<{
   groups: VisibleGroup[]
@@ -9,6 +10,9 @@ const props = defineProps<{
   groupsLoading: boolean
   sessions: QaSession[]
   activeSessionId: string | null
+  historyItems: QaHistoryItem[]
+  historyLoading: boolean
+  viewingHistoryId: number | null
 }>()
 
 const emit = defineEmits<{
@@ -16,7 +20,11 @@ const emit = defineEmits<{
   'new-chat': []
   'select-session': [id: string]
   'delete-session': [id: string]
+  'view-history': [id: number]
+  'delete-history': [id: number]
 }>()
+
+const historyOpen = ref(false)
 
 const groupValue = computed({
   get: () => props.selectedGroupId,
@@ -128,11 +136,67 @@ function formatRelative(ts: number): string {
       </div>
     </div>
 
+    <!-- Cloud history -->
+    <div class="qa-sidebar__archived">
+      <button
+        class="qa-sidebar__archived-toggle"
+        type="button"
+        :class="{ 'is-open': historyOpen }"
+        @click="historyOpen = !historyOpen"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path d="M6.5 2H20V22H6.5A2.5 2.5 0 0 1 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2Z" />
+        </svg>
+        <span>云端历史</span>
+        <span class="qa-sidebar__archived-count">{{ historyItems.length }}</span>
+        <svg class="qa-sidebar__archived-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      <ul v-if="historyOpen && historyItems.length > 0" class="qa-sidebar__list qa-sidebar__list--archived">
+        <li v-for="s in historyItems" :key="s.sessionId">
+          <div
+            class="qa-sidebar__item"
+            :class="{ 'is-active': s.sessionId === viewingHistoryId }"
+            role="button"
+            tabindex="0"
+            @click="emit('view-history', s.sessionId)"
+            @keydown.enter="emit('view-history', s.sessionId)"
+          >
+            <span class="qa-sidebar__item-bar" />
+            <div class="qa-sidebar__item-body">
+              <span class="qa-sidebar__item-title" :title="s.question">{{ s.question }}</span>
+              <span class="qa-sidebar__item-meta">
+                <span class="qa-sidebar__item-group">{{ s.groupName }}</span>
+                <span class="qa-sidebar__item-dot">·</span>
+                <span class="qa-sidebar__item-time">{{ formatRelative(new Date(s.createdAt ?? 0).getTime()) }}</span>
+              </span>
+            </div>
+            <button
+              class="qa-sidebar__item-del"
+              title="删除记录"
+              type="button"
+              @click.stop="emit('delete-history', s.sessionId)"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+              </svg>
+            </button>
+          </div>
+        </li>
+      </ul>
+      <p v-else-if="historyOpen && !historyLoading" class="qa-sidebar__archived-empty">暂无云端历史记录</p>
+      <p v-else-if="historyOpen && historyLoading" class="qa-sidebar__archived-empty">加载中…</p>
+    </div>
+
     <!-- Footer note -->
     <div class="qa-sidebar__footer">
       <div class="qa-sidebar__note">
         <span class="qa-sidebar__note-dot" />
-        会话仅保存在当前浏览器
+        问答记录已同步至云端
       </div>
     </div>
   </aside>
@@ -494,6 +558,69 @@ function formatRelative(ts: number): string {
 }
 
 .qa-sidebar__empty small {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* Cloud history */
+.qa-sidebar__archived {
+  border-top: 1px dashed var(--border-default);
+  padding-top: 8px;
+  margin-top: 6px;
+}
+
+.qa-sidebar__archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.qa-sidebar__archived-toggle:hover {
+  background: rgba(74, 144, 217, 0.06);
+  color: var(--text-primary);
+}
+
+.qa-sidebar__archived-toggle.is-open {
+  color: var(--brand-primary);
+}
+
+.qa-sidebar__archived-count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  padding: 1px 7px;
+  border-radius: 100px;
+}
+
+.qa-sidebar__archived-caret {
+  margin-left: auto;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.qa-sidebar__archived-toggle.is-open .qa-sidebar__archived-caret {
+  transform: rotate(180deg);
+}
+
+.qa-sidebar__list--archived {
+  margin-top: 4px;
+}
+
+.qa-sidebar__archived-empty {
+  padding: 8px 12px;
+  margin: 0;
   font-size: 0.72rem;
   color: var(--text-muted);
 }

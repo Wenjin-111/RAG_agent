@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   fetchAdminUsers,
   fetchAdminUserDetail,
@@ -8,6 +8,8 @@ import {
   type AdminUserItem,
   type UserStatus,
 } from '@/api/admin-user'
+import { createAdminUser } from '@/api/admin'
+import { fetchUserStats, type UsageStats } from '@/api/metrics'
 import { extractApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import PageHeaderHero from '@/components/layout/PageHeaderHero.vue'
@@ -176,6 +178,58 @@ async function toggleUserStatus(user: AdminUserItem) {
 }
 
 // ═══════════════════════════════════════
+// 新建用户
+// ═══════════════════════════════════════
+
+const createVisible = ref(false)
+const creating = ref(false)
+const createForm = ref({ username: '', email: '', displayName: '' })
+
+async function handleCreateUser() {
+  const { username, email, displayName } = createForm.value
+  if (!username.trim() || !email.trim() || !displayName.trim()) {
+    ElMessage.warning('请填写用户名、邮箱和显示名称')
+    return
+  }
+  creating.value = true
+  try {
+    await createAdminUser({ username: username.trim(), email: email.trim(), displayName: displayName.trim() })
+    ElMessage.success('用户已创建（初始密码 Admin@123456，首次登录需修改）')
+    createVisible.value = false
+    createForm.value = { username: '', email: '', displayName: '' }
+    await loadUsers()
+  } catch (err) {
+    ElMessage.error(extractApiError(err, '创建用户失败'))
+  } finally {
+    creating.value = false
+  }
+}
+
+// ═══════════════════════════════════════
+// 用量明细
+// ═══════════════════════════════════════
+
+const usageVisible = ref(false)
+const usageLoading = ref(false)
+const usageUser = ref('')
+const usageData = ref<UsageStats | null>(null)
+
+async function openUsage(user: AdminUserItem) {
+  usageVisible.value = true
+  usageUser.value = user.displayName
+  usageData.value = null
+  usageLoading.value = true
+  try {
+    usageData.value = await fetchUserStats(user.userId, 'LAST_30_DAYS')
+  } catch (err) {
+    ElMessage.error(extractApiError(err, '加载用量失败'))
+    usageVisible.value = false
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+// ═══════════════════════════════════════
 // 键盘事件：ESC 关闭详情面板
 // ═══════════════════════════════════════
 
@@ -204,6 +258,12 @@ onUnmounted(() => {
       description="管理系统用户账号、角色与状态，仅系统管理员可访问"
     >
       <template #actions>
+        <button class="action-btn" @click="createVisible = true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          新建用户
+        </button>
         <button class="action-btn" @click="loadUsers">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -325,6 +385,15 @@ onUnmounted(() => {
                 <circle cx="12" cy="12" r="1.5" />
                 <circle cx="12" cy="5" r="1.5" />
                 <circle cx="12" cy="19" r="1.5" />
+              </svg>
+            </button>
+            <button
+              class="row-btn row-btn--usage"
+              title="查看用量"
+              @click="openUsage(user)"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 3v16a2 2 0 002 2h16M7 13l4-4 3 3 5-6" />
               </svg>
             </button>
             <button
@@ -467,10 +536,118 @@ onUnmounted(() => {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- ── 新建用户弹窗 ── -->
+    <el-dialog v-model="createVisible" width="460px" title="新建用户">
+      <el-form label-width="86px" @submit.prevent>
+        <el-form-item label="用户名">
+          <el-input v-model="createForm.username" placeholder="登录用户名" maxlength="64" />
+        </el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="createForm.email" placeholder="user@example.com" maxlength="128" />
+        </el-form-item>
+        <el-form-item label="显示名称">
+          <el-input v-model="createForm.displayName" placeholder="用户显示名称" maxlength="128" />
+        </el-form-item>
+        <p class="create-hint">初始密码为 <code>Admin@123456</code>，用户首次登录后需修改密码。</p>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" :loading="creating" @click="handleCreateUser">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── 用量明细弹窗 ── -->
+    <el-dialog v-model="usageVisible" width="520px" :title="`用量明细 · ${usageUser}`">
+      <div v-loading="usageLoading">
+        <template v-if="usageData">
+          <div class="usage-grid">
+            <div class="usage-item">
+              <div class="usage-item__label">请求次数</div>
+              <div class="usage-item__value">{{ usageData.totalRequests }}</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-item__label">成功次数</div>
+              <div class="usage-item__value">{{ usageData.successRequests }}</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-item__label">失败次数</div>
+              <div class="usage-item__value usage-item__value--bad">{{ usageData.failedRequests }}</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-item__label">成功率</div>
+              <div class="usage-item__value">{{ usageData.successRate }}%</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-item__label">Token 消耗</div>
+              <div class="usage-item__value">{{ usageData.totalTokens.toLocaleString() }}</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-item__label">费用（元）</div>
+              <div class="usage-item__value">{{ usageData.totalCost }}</div>
+            </div>
+          </div>
+          <p class="usage-hint">统计范围：最近 30 天</p>
+        </template>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
+/* ════════════ Dialogs ════════════ */
+.create-hint {
+  margin: 0;
+  padding-left: 86px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.create-hint code {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--brand-primary);
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.usage-item {
+  background: var(--surface-subtle);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.usage-item__label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.usage-item__value {
+  font-family: 'Poppins', 'JetBrains Mono', monospace;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.usage-item__value--bad {
+  color: #ef4444;
+}
+
+.usage-hint {
+  margin: 12px 0 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.row-btn--usage {
+  color: var(--brand-primary);
+}
+
 /* ════════════ Page Layout ════════════ */
 .user-mgmt-page {
   width: 100%;
