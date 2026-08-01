@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.service import log_audit
 from app.auth.dependencies import get_current_user, require_admin
 from app.auth.schemas import ChangePasswordRequest
 from app.common.response import ApiResponse
@@ -48,6 +49,23 @@ async def get_user(
     return ApiResponse.ok(data=user)
 
 
+@router.post("/admin/users")
+async def create_user(
+    body: dict,
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AdminUserService(db)
+    result = await service.create_user(
+        username=body.get("username", ""),
+        email=body.get("email", ""),
+        display_name=body.get("displayName", body.get("display_name", "")),
+    )
+    await log_audit(db, _admin, "USER_CREATE", "user", result["user_id"],
+                    {"username": result["username"], "email": result["email"]})
+    return ApiResponse.ok(data=result, message="用户已创建，初始密码 Admin@123456（首次登录需修改）")
+
+
 @router.patch("/admin/users/{user_id}/status")
 async def update_user_status(
     user_id: int,
@@ -57,6 +75,7 @@ async def update_user_status(
 ):
     service = AdminUserService(db)
     await service.update_user_status(user_id, request.status)
+    await log_audit(db, _admin, "USER_STATUS_CHANGE", "user", user_id, {"status": request.status})
     return ApiResponse.ok(message="用户状态更新成功")
 
 
@@ -68,4 +87,5 @@ async def reset_password(
 ):
     service = AdminUserService(db)
     await service.reset_password(user_id, "Admin@123456")
+    await log_audit(db, _admin, "USER_PASSWORD_RESET", "user", user_id)
     return ApiResponse.ok(message="密码重置成功")

@@ -184,7 +184,10 @@ class PgVectorRetrievalAdapter:
 
     async def delete_by_document_ids(self, document_ids: List[int]) -> None:
         from app.dependencies import engine
-        id_list = ", ".join(str(did) for did in document_ids)
+        # cmetadata stores document_id as a JSON string — quote to avoid
+        # "operator does not exist: text = integer" (which used to silently
+        # fail and leave orphan vectors behind)
+        id_list = ", ".join(f"'{did}'" for did in document_ids)
         async with engine.begin() as conn:
             await conn.execute(
                 text(f"DELETE FROM langchain_pg_embedding WHERE cmetadata->>'document_id' IN ({id_list})")

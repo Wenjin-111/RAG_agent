@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -46,8 +47,16 @@ async def lifespan(app: FastAPI):
     from app.ingestion.job_service import worker
     await worker.start()
 
+    # Periodic maintenance: expired upload sessions
+    cleanup_task = asyncio.create_task(_upload_cleanup_loop())
+
     yield
 
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     await worker.stop()
     await engine.dispose()
     try:
@@ -56,6 +65,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     logger.info("Argus Python backend stopped")
+
+
+async def _upload_cleanup_loop():
+    """Hourly cleanup of expired upload sessions (non-critical)."""
+    while True:
+        try:
+            from app.dependencies import async_session_factory
+            from app.document.maintenance import DocumentMaintenanceService
+            async with async_session_factory() as session:
+                service = DocumentMaintenanceService(session)
+                cleaned = await service.cleanup_expired_uploads()
+                await session.commit()
+                if cleaned:
+                    logger.info("Upload cleanup: removed %d expired sessions", cleaned)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Upload cleanup error: %s", e)
+        await asyncio.sleep(3600)
 
 
 app = FastAPI(
@@ -83,22 +111,29 @@ app.add_exception_handler(Exception, global_exception_handler)
 # Register routers
 from app.auth.router import router as auth_router
 from app.user.router import router as user_router
-from app.group.router import router as group_router, invitation_router
-from app.document.router import router as document_router
-from app.qa.router import router as qa_router
+from app.group.router import router as group_router, invitation_router, admin_router as group_admin_router
+from app.document.router import router as document_router, admin_router as document_admin_router
+from app.qa.router import router as qa_router, admin_router as qa_admin_router
 from app.assistant.router import router as assistant_router
 from app.metrics.router import router as metrics_router
 from app.models_config.router import router as model_config_router
+from app.audit.router import router as audit_router
+from app.system.router import router as system_router
 
 app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(user_router, prefix="/api", tags=["User"])
 app.include_router(group_router, prefix="/api/groups", tags=["Groups"])
 app.include_router(invitation_router, prefix="/api/invitations", tags=["Invitations"])
+app.include_router(group_admin_router, prefix="/api/admin", tags=["Admin Groups"])
 app.include_router(document_router, prefix="/api", tags=["Documents"])
 app.include_router(qa_router, prefix="/api/qa", tags=["QA"])
 app.include_router(assistant_router, prefix="/api/assistant", tags=["Assistant"])
+app.include_router(document_admin_router, prefix="/api/admin", tags=["Admin Documents"])
+app.include_router(qa_admin_router, prefix="/api/admin", tags=["Admin QA"])
 app.include_router(metrics_router, prefix="/api/admin/metrics", tags=["Metrics"])
 app.include_router(model_config_router, prefix="/api/admin", tags=["Model Config"])
+app.include_router(audit_router, prefix="/api/admin", tags=["Audit"])
+app.include_router(system_router, prefix="/api/admin", tags=["System"])
 
 
 async def _init_database(engine):
@@ -111,12 +146,18 @@ async def _init_database(engine):
     import app.document.models as _dm   # noqa: F401
     import app.ingestion.models as _im  # noqa: F401
     import app.assistant.models as _asm # noqa: F401
+    import app.qa.models as _qm         # noqa: F401
     import app.metrics.models as _mm    # noqa: F401
     import app.models_config.models as _mcm  # noqa: F401
+    import app.audit.models as _audit   # noqa: F401
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column for QA evidence-level statistics (no migration tooling)
+        await conn.execute(text(
+            "ALTER TABLE qa_messages ADD COLUMN IF NOT EXISTS evidence_level VARCHAR(16)"
+        ))
     logger.info("Database tables initialized")
 
 

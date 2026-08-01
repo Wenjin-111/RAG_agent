@@ -6,13 +6,15 @@ from typing import AsyncIterator, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from sqlalchemy import select, update
 
 from app.config import settings
 from app.engine.vector_store import PgVectorRetrievalAdapter
+from app.qa.models import QaSession, QaMessage
 from app.qa.query_planning import QueryPlanningService, EvidenceLevel
 from app.qa.retrieval import HybridChunkRetrievalService, RetrievedEvidenceBundle
 from app.qa.citation import CitationAssembler
-from app.metrics.collector import LlmUsageCollector
+from app.metrics.collector import LlmUsageCollector, estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +24,12 @@ class QaService:
         self._query_planning = QueryPlanningService()
         self._vector_adapter = PgVectorRetrievalAdapter(settings.database_url)
 
-    async def ask(self, user_id: int, group_id: int, question: str) -> dict:
+    async def ask(self, user_id: int, group_id: int, question: str,
+                  session_id: Optional[int] = None) -> dict:
         start_time = time.perf_counter()
 
         # Query planning
-        plan = await self._query_planning.plan(question)
+        plan = await self._query_planning.plan(question, user_id)
         planned_queries = plan.get("queries", [question])
         logger.info("QA plan: strategy=%s, queries=%s", plan.get("strategy"), planned_queries)
 
@@ -40,7 +43,7 @@ class QaService:
         for doc in bundle.documents:
             citations.append({"index": len(citations) + 1, "file_name": doc.source_file})
 
-        MAX_EVIDENCE_CHARS = 3000
+        MAX_EVIDENCE_CHARS = 4000
         evidence_text = ""
         for doc in bundle.documents:
             chunk = f"\n\n--- 证据 {doc.evidence_id} ---\n{doc.content}"
@@ -110,17 +113,25 @@ class QaService:
                 })
 
         if not answer or bundle.evidence_level == EvidenceLevel.NONE:
+            reason_code = "NO_EVIDENCE" if bundle.evidence_level == EvidenceLevel.NONE else "LOW_CONFIDENCE"
+            reason_message = "未检索到相关文档" if bundle.evidence_level == EvidenceLevel.NONE else "证据不足"
+            await self._persist_session(user_id, group_id, question, "", [], reason_code, reason_message,
+                                        session_id=session_id,
+                                        evidence_level=bundle.evidence_level.value)
             await self._record_usage(user_id, group_id, "qa", "/api/qa/ask", 0, 0, True)
             return {
                 "answered": False,
                 "answer": None,
-                "reasonCode": "NO_EVIDENCE" if bundle.evidence_level == EvidenceLevel.NONE else "LOW_CONFIDENCE",
-                "reasonMessage": "未检索到相关文档" if bundle.evidence_level == EvidenceLevel.NONE else "证据不足",
+                "reasonCode": reason_code,
+                "reasonMessage": reason_message,
                 "citations": [],
             }
 
+        await self._persist_session(user_id, group_id, question, answer, formatted_citations,
+                                    None, None, thinking, session_id=session_id,
+                                    evidence_level=bundle.evidence_level.value)
         await self._record_usage(user_id, group_id, "qa", "/api/qa/ask",
-            len(evidence_text) // 1, len(answer) // 1, True,
+            estimate_tokens(evidence_text), estimate_tokens(answer), True,
             model_name=chat_cfg["model_name"])
         return {
             "answered": True,
@@ -129,6 +140,57 @@ class QaService:
             "reasonMessage": None,
             "citations": formatted_citations,
         }
+
+    async def _persist_session(self, user_id: int, group_id: int, question: str,
+                               answer: str, citations: list, reason_code: Optional[str],
+                               reason_message: Optional[str], thinking: str = "",
+                               session_id: Optional[int] = None,
+                               evidence_level: Optional[str] = None) -> None:
+        """Persist one Q&A round. With session_id, append to that session
+        (verified to belong to the user); otherwise create a new one."""
+        try:
+            from app.dependencies import async_session_factory
+            from app.common.time_utils import utcnow
+            async with async_session_factory() as session:
+                qa_session = None
+                if session_id is not None:
+                    result = await session.execute(
+                        select(QaSession).where(
+                            QaSession.id == session_id,
+                            QaSession.user_id == user_id,
+                        )
+                    )
+                    qa_session = result.scalar_one_or_none()
+
+                if qa_session is None:
+                    qa_session = QaSession(
+                        user_id=user_id,
+                        group_id=group_id,
+                        title=question.strip()[:40],
+                    )
+                    session.add(qa_session)
+                    await session.flush()
+                else:
+                    await session.execute(
+                        update(QaSession)
+                        .where(QaSession.id == qa_session.id)
+                        .values(updated_at=utcnow())
+                    )
+
+                session.add(QaMessage(session_id=qa_session.id, role="USER", content=question))
+                session.add(QaMessage(
+                    session_id=qa_session.id,
+                    role="ASSISTANT",
+                    content=answer or "",
+                    thinking=thinking or None,
+                    citations=citations or None,
+                    reason_code=reason_code,
+                    reason_message=reason_message,
+                    evidence_level=evidence_level,
+                ))
+                await session.commit()
+        except Exception:
+            pass  # persistence must never break QA
 
     async def _record_usage(self, user_id: int, group_id: int, module: str,
                             endpoint: str, prompt_tokens: int, completion_tokens: int,
@@ -150,11 +212,11 @@ class QaService:
             pass  # metrics failure should never break QA
 
     async def ask_stream(self, user_id: int, group_id: int,
-                         question: str) -> AsyncIterator[dict]:
+                         question: str, session_id: Optional[int] = None) -> AsyncIterator[dict]:
         start_time = time.perf_counter()
 
         # Query planning
-        plan = await self._query_planning.plan(question)
+        plan = await self._query_planning.plan(question, user_id)
         planned_queries = plan.get("queries", [question])
 
         # Hybrid retrieval
@@ -175,7 +237,7 @@ class QaService:
                 })
 
         # Limit total evidence text to avoid overflowing model context window
-        MAX_EVIDENCE_CHARS = 3000
+        MAX_EVIDENCE_CHARS = 4000
         evidence_text = ""
         for doc in bundle.documents:
             chunk = f"\n\n--- 证据 {doc.evidence_id} ---\n{doc.content}"
@@ -185,6 +247,22 @@ class QaService:
                     evidence_text += chunk[:remaining] + "..."
                 break
             evidence_text += chunk
+
+        # No evidence — short-circuit and report refusal instead of calling the LLM
+        if bundle.evidence_level == EvidenceLevel.NONE:
+            await self._persist_session(user_id, group_id, question, "", [], "NO_EVIDENCE",
+                                        "未检索到相关文档", session_id=session_id,
+                                        evidence_level=bundle.evidence_level.value)
+            await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask", 0, 0, True)
+            yield {"event": "citations", "data": json.dumps({
+                "citations": [],
+                "thinking": "",
+                "reasonCode": "NO_EVIDENCE",
+                "reasonMessage": "未检索到相关文档",
+            })}
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            yield {"event": "done", "data": json.dumps({"elapsed_ms": elapsed_ms})}
+            return
 
         # LLM generation with streaming — use active model config if available
         from app.models_config.resolver import get_chat_config
@@ -235,7 +313,10 @@ class QaService:
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
             return
 
-        answer_text += parser.flush()
+        tail = parser.flush()
+        if tail:
+            answer_text += tail
+            yield {"event": "token", "data": json.dumps({"text": tail})}
         if not answer_text and full_content.strip():
             # Delimiter tags missing entirely — fall back to off-line parse
             answer_text, _, _ = _parse_delimited_response(full_content.strip())
@@ -245,19 +326,24 @@ class QaService:
             yield {"event": "answer", "data": json.dumps({"text": answer_text})}
         # Record usage with the actual active model name
         await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
-            len(evidence_text) // 1, len(answer_text) // 1, True,
+            estimate_tokens(evidence_text), estimate_tokens(answer_text), True,
             model_name=chat_cfg["model_name"])
         _, thinking_text, _ = _parse_delimited_response(full_content.strip())
+        persisted_citations = [{
+            "documentId": None,
+            "chunkId": None,
+            "chunkIndex": c.get("chunkIndex"),
+            "fileName": c["file_name"],
+            "score": c.get("score", 1.0),
+            "snippet": c.get("snippet"),
+        } for c in citations]
+        await self._persist_session(user_id, group_id, question, answer_text,
+                                    persisted_citations, None, None, thinking_text,
+                                    session_id=session_id,
+                                    evidence_level=bundle.evidence_level.value)
         yield {"event": "citations",
                "data": json.dumps({
-                   "citations": [{
-                       "documentId": None,
-                       "chunkId": None,
-                       "chunkIndex": c.get("chunkIndex"),
-                       "fileName": c["file_name"],
-                       "score": c.get("score", 1.0),
-                       "snippet": c.get("snippet"),
-                   } for c in citations],
+                   "citations": persisted_citations,
                    "thinking": thinking_text,
                })}
 

@@ -1,13 +1,16 @@
+import logging
 from datetime import datetime
 
 from app.common.time_utils import utcnow
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+logger = logging.getLogger(__name__)
+
 from app.auth.models import User
 from app.auth.security import hash_password, verify_password
 from app.auth.schemas import ChangePasswordRequest
-from app.auth.enums import UserStatus
+from app.auth.enums import SystemRole, UserStatus
 from app.common.exception.exceptions import BusinessException
 
 
@@ -87,3 +90,38 @@ class AdminUserService:
         user.password_hash = hash_password(new_password)
         user.must_change_password = True
         await self.session.flush()
+
+    async def create_user(self, username: str, email: str, display_name: str) -> dict:
+        """Create a user with the default password; must change on first login."""
+        username = username.strip()
+        email = email.strip()
+        display_name = display_name.strip()
+        if not username or not email or not display_name:
+            raise BusinessException("用户名、邮箱、显示名称均不能为空")
+
+        result = await self.session.execute(select(User).where(User.username == username))
+        if result.scalar_one_or_none():
+            raise BusinessException("用户名已存在")
+        result = await self.session.execute(select(User).where(User.email == email))
+        if result.scalar_one_or_none():
+            raise BusinessException("邮箱已存在")
+
+        user = User(
+            user_code=username,
+            username=username,
+            email=email,
+            display_name=display_name,
+            password_hash=hash_password("Admin@123456"),
+            system_role=SystemRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+            must_change_password=True,
+        )
+        self.session.add(user)
+        await self.session.flush()
+        logger.info("Admin created user: %s (%s)", username, email)
+        return {
+            "user_id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+        }

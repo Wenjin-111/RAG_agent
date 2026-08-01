@@ -28,7 +28,8 @@ REQUEST_STATUS_CANCELLED = "CANCELLED"
 
 
 def _fmt(dt) -> Optional[str]:
-    return dt.isoformat() if dt else None
+    # UTC suffix so browsers parse it as UTC (consistent with other modules)
+    return dt.isoformat() + "Z" if dt else None
 
 
 async def require_group_access(
@@ -40,6 +41,11 @@ async def require_group_access(
     """系统管理员或群组成员可访问，否则抛出 ForbiddenException。"""
     if system_role == "ADMIN":
         return
+    group_status = (await session.execute(
+        select(Group.status).where(Group.id == group_id)
+    )).scalar_one_or_none()
+    if group_status != "ACTIVE":
+        raise ForbiddenException("群组已被停用或解散")
     result = await session.execute(
         select(GroupMembership).where(
             GroupMembership.group_id == group_id,

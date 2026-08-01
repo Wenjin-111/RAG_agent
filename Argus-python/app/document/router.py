@@ -6,7 +6,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_user
+from app.audit.service import log_audit
+from app.auth.dependencies import get_current_user, require_admin
+from app.auth.models import User
 from app.common.response import ApiResponse
 from app.common.security.context import AuthenticatedUser
 from app.common.exception.exceptions import BusinessException, ForbiddenException
@@ -46,11 +48,10 @@ async def get_document(
 @router.get("/documents/{document_id}/preview")
 async def get_preview(
     document_id: int,
-    group_id: int = Query(..., alias="groupId"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
+    await _check_document_access(db, current_user, document_id)
     service = DocumentQueryService(db)
     result = await service.get_preview(document_id)
     return ApiResponse.ok(data=result)
@@ -59,11 +60,10 @@ async def get_preview(
 @router.get("/documents/{document_id}/download")
 async def download(
     document_id: int,
-    group_id: int = Query(..., alias="groupId"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
+    await _check_document_access(db, current_user, document_id)
     service = DocumentQueryService(db)
     data, file_name, content_type = await service.download(document_id)
     return StreamingResponse(
@@ -102,27 +102,28 @@ async def list_chunks(
 @router.delete("/documents/{document_id}")
 async def delete_document(
     document_id: int,
-    group_id: int = Query(..., alias="groupId"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
+    await _check_document_access(db, current_user, document_id)
     service = DocumentQueryService(db)
-    await service.delete(current_user.user_id, document_id)
-    return ApiResponse.ok(message="文档已删除")
+    cleanup = await service.delete(current_user.user_id, document_id)
+    await log_audit(db, current_user, "DOCUMENT_DELETE", "document", document_id)
+    if all(cleanup.values()):
+        return ApiResponse.ok(message="文档已删除")
+    return ApiResponse.ok(message="文档已删除，但部分索引清理失败（向量/搜索/存储），可能残留影响检索，建议联系管理员")
 
 
 @router.post("/documents/{document_id}/retry-ingestion")
 async def retry_ingestion(
     document_id: int,
-    group_id: int = Query(..., alias="groupId"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     from app.ingestion.models import IngestionJob
     from app.document.models import Document
 
-    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
+    await _check_document_access(db, current_user, document_id)
 
     result = await db.execute(select(Document).where(Document.id == document_id))
     doc = result.scalar_one_or_none()
@@ -142,6 +143,7 @@ async def retry_ingestion(
     )
     db.add(job)
     await db.flush()
+    await log_audit(db, current_user, "DOCUMENT_RETRY", "document", document_id)
     return ApiResponse.ok(message="已重新提交处理")
 
 
@@ -272,3 +274,136 @@ async def _check_document_access(db: AsyncSession, current_user: AuthenticatedUs
     if doc is None:
         raise BusinessException("文档不存在")
     await require_group_access(db, current_user.user_id, current_user.system_role, doc.group_id)
+
+
+# ---- Admin: global document management (requires admin) ----
+
+admin_router = APIRouter()
+
+
+@admin_router.get("/documents")
+async def admin_list_documents(
+    status: str = Query(default=""),
+    group_id: int | None = Query(default=None, alias="groupId"),
+    file_name: str = Query(default="", alias="fileName"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import func
+    from app.document.models import Document
+    from app.group.models import Group
+
+    conditions = [Document.deleted == False]
+    if status:
+        conditions.append(Document.status == status)
+    if group_id:
+        conditions.append(Document.group_id == group_id)
+    if file_name:
+        conditions.append(Document.file_name.ilike(f"%{file_name}%"))
+
+    count_result = await db.execute(
+        select(func.count()).select_from(Document).where(*conditions)
+    )
+    total = count_result.scalar() or 0
+
+    result = await db.execute(
+        select(Document, Group.group_name, User.display_name, User.user_code)
+        .join(Group, Document.group_id == Group.id)
+        .join(User, Document.uploader_user_id == User.id)
+        .where(*conditions)
+        .order_by(Document.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    items = []
+    for doc, gname, uname, ucode in result:
+        items.append({
+            "documentId": doc.id,
+            "fileName": doc.file_name,
+            "fileExt": doc.file_ext,
+            "fileSize": doc.file_size,
+            "status": doc.status,
+            "groupId": doc.group_id,
+            "groupName": gname,
+            "uploaderUserId": doc.uploader_user_id,
+            "uploaderDisplayName": uname,
+            "uploaderUserCode": ucode,
+            "failureReason": doc.failure_reason,
+            "uploadedAt": doc.uploaded_at.isoformat() + "Z" if doc.uploaded_at else None,
+            "processedAt": doc.processed_at.isoformat() + "Z" if doc.processed_at else None,
+        })
+    return ApiResponse.ok(data={"items": items, "total": total, "page": page, "limit": limit})
+
+
+@admin_router.get("/documents/stats")
+async def admin_document_stats(
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import func, case
+    from app.document.models import Document
+
+    result = await db.execute(
+        select(
+            func.count().label("total"),
+            func.sum(case((Document.status == "READY", 1), else_=0)).label("ready"),
+            func.sum(case((Document.status == "PROCESSING", 1), else_=0)).label("processing"),
+            func.sum(case((Document.status == "UPLOADED", 1), else_=0)).label("pending"),
+            func.sum(case((Document.status == "FAILED", 1), else_=0)).label("failed"),
+            func.sum(case((Document.deleted == False, Document.file_size), else_=0)).label("storage_bytes"),
+        ).where(Document.deleted == False)
+    )
+    r = result.one()
+    return ApiResponse.ok(data={
+        "total": r.total or 0,
+        "ready": r.ready or 0,
+        "processing": r.processing or 0,
+        "pending": r.pending or 0,
+        "failed": r.failed or 0,
+        "storageBytes": r.storage_bytes or 0,
+    })
+
+
+@admin_router.post("/documents/{document_id}/retry")
+async def admin_retry_document(
+    document_id: int,
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.ingestion.models import IngestionJob
+    from app.document.models import Document
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if doc is None or doc.deleted:
+        raise BusinessException("文档不存在")
+    if doc.status != "FAILED":
+        raise BusinessException("只有处理失败的文档才能重试")
+
+    doc.status = "UPLOADED"
+    db.add(IngestionJob(
+        document_id=document_id,
+        group_id=doc.group_id,
+        job_type="INGEST_DOCUMENT",
+        status="PENDING",
+        max_retries=3,
+    ))
+    await db.flush()
+    await log_audit(db, _admin, "DOCUMENT_RETRY", "document", document_id)
+    return ApiResponse.ok(message="已重新提交处理")
+
+
+@admin_router.delete("/documents/{document_id}")
+async def admin_delete_document(
+    document_id: int,
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = DocumentQueryService(db)
+    cleanup = await service.delete(1, document_id)
+    await log_audit(db, _admin, "DOCUMENT_DELETE", "document", document_id)
+    if all(cleanup.values()):
+        return ApiResponse.ok(message="文档已删除")
+    return ApiResponse.ok(message="文档已删除，但部分索引清理失败（向量/搜索/存储），可能残留影响检索，建议检查系统日志")

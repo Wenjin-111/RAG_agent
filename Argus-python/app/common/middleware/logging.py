@@ -3,6 +3,8 @@ import logging
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.common.security.context import UserContext
+
 logger = logging.getLogger("argus.access")
 
 
@@ -11,11 +13,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         response = await call_next(request)
         elapsed_ms = int((time.perf_counter() - start) * 1000)
+        # UserContext is set by get_current_user inside call_next — safe to read after
+        user = UserContext.get()
+        user_id = user.user_id if user else None
         logger.info(
-            "%s %s -> %s (%dms)",
+            "%s %s -> %s (%dms) userId=%s",
             request.method,
             request.url.path,
             response.status_code,
             elapsed_ms,
+            user_id,
         )
         return response

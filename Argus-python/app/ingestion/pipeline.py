@@ -100,12 +100,13 @@ class EtlDocumentIngestionProcessor:
             await es_service.index_chunks(doc.file_name, chunk_entities)
             logger.info("Indexed %d chunks in ES", len(chunk_entities))
 
-            # 9. Mark document READY
+            # 9. Mark document READY (clear any stale failure reason)
             await self.session.execute(
                 update(Document).where(Document.id == document_id).values(
                     status=DOC_STATUS_READY,
                     preview_text=preview,
                     processed_at=utcnow(),
+                    failure_reason=None,
                 )
             )
             await self.session.flush()

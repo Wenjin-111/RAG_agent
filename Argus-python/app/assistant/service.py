@@ -13,8 +13,15 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
 from app.assistant.agent import facade
+from app.metrics.collector import LlmUsageCollector, estimate_tokens
 
 logger = logging.getLogger(__name__)
+
+SESSION_STATUS_ACTIVE = "ACTIVE"
+SESSION_STATUS_ARCHIVED = "ARCHIVED"
+SESSION_STATUS_DELETED = "DELETED"
+# Sessions idle longer than this are auto-archived (lazily, on list)
+ARCHIVE_IDLE_DAYS = 30
 
 
 def _fmt(dt) -> Optional[str]:
@@ -28,10 +35,12 @@ class AssistantService:
 
     # ---- Sessions ----
 
-    async def list_sessions(self, user_id: int) -> List[dict]:
+    async def list_sessions(self, user_id: int, status: str = SESSION_STATUS_ACTIVE) -> List[dict]:
+        if status == SESSION_STATUS_ACTIVE:
+            await self._lazy_archive(user_id)
         result = await self.session.execute(
             select(AssistantSession)
-            .where(AssistantSession.user_id == user_id, AssistantSession.status == "ACTIVE")
+            .where(AssistantSession.user_id == user_id, AssistantSession.status == status)
             .order_by(AssistantSession.last_message_at.desc().nullslast(), AssistantSession.created_at.desc())
         )
         return [
@@ -39,6 +48,44 @@ class AssistantService:
              "last_message_at": _fmt(s.last_message_at), "created_at": _fmt(s.created_at)}
             for s in result.scalars()
         ]
+
+    async def _lazy_archive(self, user_id: int) -> None:
+        """Archive ACTIVE sessions idle for ARCHIVE_IDLE_DAYS (no background job)."""
+        from datetime import timedelta
+
+        cutoff = utcnow() - timedelta(days=ARCHIVE_IDLE_DAYS)
+        await self.session.execute(
+            update(AssistantSession)
+            .where(
+                AssistantSession.user_id == user_id,
+                AssistantSession.status == SESSION_STATUS_ACTIVE,
+                AssistantSession.last_message_at.isnot(None),
+                AssistantSession.last_message_at < cutoff,
+            )
+            .values(status=SESSION_STATUS_ARCHIVED, updated_at=utcnow())
+        )
+        await self.session.flush()
+
+    async def archive_session(self, user_id: int, session_id: int) -> None:
+        await self._set_session_status(user_id, session_id, SESSION_STATUS_ARCHIVED)
+
+    async def restore_session(self, user_id: int, session_id: int) -> None:
+        await self._set_session_status(user_id, session_id, SESSION_STATUS_ACTIVE)
+
+    async def _set_session_status(self, user_id: int, session_id: int, status: str) -> None:
+        result = await self.session.execute(
+            update(AssistantSession)
+            .where(
+                AssistantSession.id == session_id,
+                AssistantSession.user_id == user_id,
+                AssistantSession.status != SESSION_STATUS_DELETED,
+            )
+            .values(status=status, updated_at=utcnow())
+        )
+        if result.rowcount == 0:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+        await self.session.flush()
 
     async def create_session(self, user_id: int, title: str = "新会话") -> dict:
         session_entity = AssistantSession(
@@ -111,25 +158,50 @@ class AssistantService:
         for m in reversed(list(result.scalars())):
             recent.append({"message_id": m.id, "role": m.role, "content": m.content,
                           "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at)})
+        summary_text = ctx.get("summary_text") or ctx.get("compact_summary") or ""
         return {
-            "summaryText": ctx.get("compact_summary") or ctx.get("summary_text") or "",
+            "summaryText": summary_text,
+            "summaryUpdatedAt": _fmt(ctx.get("updated_at")),
             "recentMessages": recent,
         }
 
     # ---- Messages ----
 
-    async def list_messages(self, session_id: int, limit: int = 50) -> List[dict]:
+    async def list_messages(self, session_id: int, before_id: Optional[int] = None,
+                            limit: int = 30) -> dict:
+        """Cursor-paginated messages, newest first internally, returned ascending."""
+        stmt = select(AssistantMessage).where(AssistantMessage.session_id == session_id)
+        if before_id is not None:
+            stmt = stmt.where(AssistantMessage.id < before_id)
+        stmt = stmt.order_by(AssistantMessage.id.desc()).limit(limit + 1)
+        result = await self.session.execute(stmt)
+        rows = list(result.scalars())
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        rows.reverse()
+        return {
+            "items": [
+                {"message_id": m.id, "role": m.role, "content": m.content,
+                 "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at)}
+                for m in rows
+            ],
+            "has_more": has_more,
+            "next_before_id": rows[0].id if has_more and rows else None,
+        }
+
+    async def refresh_summary(self, user_id: int, session_id: int) -> str:
+        """Force-regenerate the session's semantic summary (for the memory card)."""
         result = await self.session.execute(
-            select(AssistantMessage)
-            .where(AssistantMessage.session_id == session_id)
-            .order_by(AssistantMessage.created_at, AssistantMessage.id)
-            .limit(limit)
+            select(AssistantSession)
+            .where(AssistantSession.id == session_id, AssistantSession.user_id == user_id)
         )
-        return [
-            {"message_id": m.id, "role": m.role, "content": m.content,
-             "tool_mode": m.tool_mode, "created_at": _fmt(m.created_at)}
-            for m in result.scalars()
-        ]
+        if result.scalar_one_or_none() is None:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+        ctx = await self.memory.get_or_create_context(session_id)
+        await self.memory._update_summary(session_id, ctx, user_id)
+        await self.session.flush()
+        return ctx.summary_text or ctx.compact_summary or ""
 
     # ---- Chat ----
 
@@ -145,7 +217,7 @@ class AssistantService:
         await self.session.flush()
 
         # Memory maintenance
-        await self.memory.maintain_before_response(session_id)
+        await self.memory.maintain_before_response(session_id, user_id)
 
         # Load context and build instruction
         ctx = await self.memory.load_context(session_id)
@@ -173,7 +245,11 @@ class AssistantService:
 
         # Auto-title (fire-and-forget, non-critical)
         import asyncio
-        asyncio.create_task(self._auto_title(session_id, message, result.get("reply", "")))
+        asyncio.create_task(self._auto_title_async(session_id, user_id, message, result.get("reply", "")))
+
+        # Record estimated LLM usage (agent internals don't expose real token counts)
+        await self._record_usage(user_id, group_id, session_id, "/api/assistant/chat",
+                                 instruction + "\n" + message, result.get("reply", ""))
 
         return {
             "session_id": session_id,
@@ -193,7 +269,7 @@ class AssistantService:
         ))
         await self.session.flush()
 
-        await self.memory.maintain_before_response(session_id)
+        await self.memory.maintain_before_response(session_id, user_id)
         ctx = await self.memory.load_context(session_id)
         instruction = self._build_instruction(ctx, tool_mode)
 
@@ -220,7 +296,11 @@ class AssistantService:
 
         # Auto-title (fire-and-forget, non-critical, with its own session)
         import asyncio as _asyncio
-        _asyncio.create_task(self._auto_title_async(session_id, message, full_reply))
+        _asyncio.create_task(self._auto_title_async(session_id, user_id, message, full_reply))
+
+        # Record estimated LLM usage
+        await self._record_usage(user_id, group_id, session_id, "/api/assistant/chat/stream",
+                                 instruction + "\n" + message, full_reply)
 
     async def _ensure_session(self, user_id: int, session_id: Optional[int]) -> int:
         if session_id:
@@ -251,12 +331,33 @@ class AssistantService:
         parts.append("\n请用中文回答，保持简洁专业。")
         return "\n".join(parts)
 
-    async def _auto_title(self, session_id: int, user_msg: str, assistant_reply: str):
-        """Launch auto-title in background with its own DB session."""
-        import asyncio as _asyncio
-        _asyncio.create_task(self._auto_title_async(session_id, user_msg, assistant_reply))
+    async def _record_usage(self, user_id: int, group_id: Optional[int], session_id: int,
+                            endpoint: str, prompt_text: str, completion_text: str) -> None:
+        """Record estimated LLM usage for an assistant call (non-critical)."""
+        try:
+            from app.models_config.resolver import get_chat_config
+            chat_cfg = await get_chat_config(user_id)
+            prompt_tokens = estimate_tokens(prompt_text)
+            completion_tokens = estimate_tokens(completion_text)
+            collector = LlmUsageCollector(self.session)
+            await collector.record(
+                user_id=user_id,
+                group_id=group_id,
+                module="assistant",
+                endpoint=endpoint,
+                session_id=str(session_id),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                success=True,
+                is_estimated=True,
+                model_name=chat_cfg["model_name"],
+            )
+            await self.session.flush()
+        except Exception:
+            pass  # metrics failure should never break chat
 
-    async def _auto_title_async(self, session_id: int, user_msg: str, assistant_reply: str):
+    async def _auto_title_async(self, session_id: int, user_id: int, user_msg: str, assistant_reply: str):
         try:
             from app.dependencies import async_session_factory
             from app.models_config.resolver import get_chat_config
@@ -266,7 +367,7 @@ class AssistantService:
                 )
                 current_title = result.scalar_one_or_none()
                 if not current_title or current_title == "新会话":
-                    chat_cfg = await get_chat_config(1)
+                    chat_cfg = await get_chat_config(user_id)
                     model = ChatOpenAI(
                         model=chat_cfg["model_name"], openai_api_key=chat_cfg["api_key"],
                         openai_api_base=chat_cfg["base_url"], temperature=0.3, max_tokens=16,

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.service import log_audit
 from app.auth.dependencies import get_current_user, require_admin
 from app.common.response import ApiResponse
 from app.common.security.context import AuthenticatedUser
@@ -36,6 +37,8 @@ async def add_model(
         api_key=body.get("api_key", body.get("apiKey", "")),
         model_name=body.get("model_name", body.get("modelName", "")),
     )
+    await log_audit(db, _admin, "MODEL_CONFIG_ADD", "model_config", result["id"],
+                    {"modelName": result["model_name"], "modelType": result["model_type"]})
     return ApiResponse.ok(data=result)
 
 
@@ -47,6 +50,8 @@ async def activate_model(
 ):
     service = ModelConfigService(db)
     result = await service.activate_model(_admin.user_id, model_id)
+    await log_audit(db, _admin, "MODEL_CONFIG_ACTIVATE", "model_config", model_id,
+                    {"modelName": result["model_name"], "modelType": result["model_type"]})
     return ApiResponse.ok(data=result)
 
 
@@ -58,6 +63,7 @@ async def delete_model(
 ):
     service = ModelConfigService(db)
     await service.delete_model(_admin.user_id, model_id)
+    await log_audit(db, _admin, "MODEL_CONFIG_DELETE", "model_config", model_id)
     return ApiResponse.ok(message="已删除")
 
 

@@ -4,18 +4,8 @@ from app.common.security.context import AuthenticatedUser, UserContext
 from app.common.exception.exceptions import AuthenticationException, ForbiddenException
 from app.config import settings
 
-WHITELIST_PATHS = {
-    "/api/auth/login",
-    "/api/auth/register",
-    "/api/auth/refresh",
-    "/api/auth/logout",
-}
-
 
 async def get_current_user(request: Request) -> AuthenticatedUser:
-    if request.url.path in WHITELIST_PATHS:
-        raise AuthenticationException("Token 无效或已过期")
-
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:].strip()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections import defaultdict
@@ -13,8 +14,11 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 CHANNEL_TOP_K = 50
-RRF_K = 0
+# Standard RRF smoothing constant (originally 0 = pure 1/rank, which let a
+# single-channel rank-1 hit dominate over multi-channel agreement)
+RRF_K = 60
 DEFAULT_NEIGHBOR_WINDOW = 1
+FUSION_TOP_K = 8
 
 
 @dataclass
@@ -56,12 +60,19 @@ class HybridChunkRetrievalService:
         self.vector_adapter = vector_adapter
 
     async def retrieve(self, group_id: int, question: str,
-                       planned_queries: List[str], top_k: int = 5) -> RetrievedEvidenceBundle:
+                       planned_queries: List[str], top_k: int = FUSION_TOP_K) -> RetrievedEvidenceBundle:
         candidates: Dict[int, RetrievalCandidate] = {}
 
-        for query in planned_queries:
-            await self._merge_vector_hits(candidates, group_id, query)
-            await self._merge_keyword_hits(candidates, group_id, query)
+        # Run both retrieval channels for all planned queries concurrently.
+        # Safe on one event loop: dict mutations are synchronous blocks with no
+        # await between read-modify-write, so coroutines cannot interleave them.
+        await asyncio.gather(*[
+            asyncio.gather(
+                self._merge_vector_hits(candidates, group_id, query),
+                self._merge_keyword_hits(candidates, group_id, query),
+            )
+            for query in planned_queries
+        ])
 
         if not candidates:
             return RetrievedEvidenceBundle.empty()
@@ -143,11 +154,16 @@ class HybridChunkRetrievalService:
         from app.document.models import Document
         from sqlalchemy import select
 
+        # Inner join + exclude soft-deleted documents: leftover vectors of
+        # deleted documents must never surface as evidence.
         async with async_session_factory() as session:
             result = await session.execute(
                 select(DocumentChunk, Document.file_name)
-                .outerjoin(Document, DocumentChunk.document_id == Document.id)
-                .where(DocumentChunk.id.in_(chunk_ids))
+                .join(Document, DocumentChunk.document_id == Document.id)
+                .where(
+                    DocumentChunk.id.in_(chunk_ids),
+                    Document.deleted == False,  # noqa: E712
+                )
             )
             return {row.id: (row, file_name or "未知文件") for row, file_name in result}
 
@@ -175,10 +191,19 @@ class HybridChunkRetrievalService:
         if not content.strip():
             return None
 
-        # Get source file name, chunk index, and RRF score
-        entry = db_rows.get(cluster[0].chunk_id)
-        source_file = entry[1] if entry else "未知文件"
-        main_chunk_index = entry[0].chunk_index if entry else 0
+        # Get source file name, chunk index, and RRF score.
+        # Prefer a valid row over the cluster head — the head may be a leftover
+        # vector whose chunk row was deleted (file attribution would be wrong).
+        entry = None
+        for c in cluster:
+            candidate = db_rows.get(c.chunk_id)
+            if candidate is not None:
+                entry = candidate
+                break
+        if entry is None:
+            return None
+        source_file = entry[1] or "未知文件"
+        main_chunk_index = entry[0].chunk_index
 
         return EvidenceDocument(
             evidence_id=evidence_id,
@@ -203,9 +228,10 @@ class HybridChunkRetrievalService:
         has_vector = any(c.vector_score > 0 for c in candidates)
         has_keyword = any(c.keyword_score > 0 for c in candidates)
         both = has_vector and has_keyword
-        top_score = max(c.ranking_score for c in candidates) if candidates else 0
 
-        if len(documents) >= 2 and (both or (has_vector and top_score >= 0.85)):
+        # Note: the former `top_score >= 0.85` clause was always true — ranking
+        # scores are normalized (max = 1.0) before assessment — so it is removed
+        if len(documents) >= 2 and (both or has_vector):
             return EvidenceLevel.SUFFICIENT
         elif both or len(documents) >= 2:
             return EvidenceLevel.PARTIAL

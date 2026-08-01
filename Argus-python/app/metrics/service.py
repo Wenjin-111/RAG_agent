@@ -1,7 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, func, case, literal_column
+from sqlalchemy import select, func, case, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.time_utils import utcnow
@@ -40,7 +40,7 @@ class LlmUsageStatisticsService:
         today_success = t.success_count or 0
         today_success_rate = (today_success / today_calls * 100) if today_calls > 0 else 100.0
 
-        # daily trend (last 30 days)
+        # daily trend (last 30 days, zero-filled so the chart line is continuous)
         since = utcnow() - timedelta(days=30)
         trend_result = await self.session.execute(
             select(
@@ -51,17 +51,18 @@ class LlmUsageStatisticsService:
             )
             .where(LlmUsageRecord.created_at >= since)
             .group_by(func.date(LlmUsageRecord.created_at))
-            .order_by(func.date(LlmUsageRecord.created_at))
         )
-        daily_trend = [
-            {
-                "date": str(r.date),
-                "requests": r.calls,
-                "tokens": r.tokens or 0,
-                "cost": float(r.cost or Decimal("0")),
-            }
-            for r in trend_result
-        ]
+        trend_map = {str(r.date): r for r in trend_result}
+        daily_trend = []
+        for i in range(30):
+            day = (utcnow() - timedelta(days=29 - i)).date()
+            row = trend_map.get(str(day))
+            daily_trend.append({
+                "date": str(day),
+                "requests": row.calls if row else 0,
+                "tokens": (row.tokens or 0) if row else 0,
+                "cost": float(row.cost or Decimal("0")) if row else 0.0,
+            })
 
         return {
             "today_requests": today_calls,
@@ -156,3 +157,100 @@ class LlmUsageStatisticsService:
             stmt = stmt.where(*filters)
         result = await self.session.execute(stmt)
         return result.scalar() or 0
+
+    async def insights(self) -> dict:
+        """Platform insights: document trend/formats, DAU, evidence quality."""
+        from app.document.models import Document
+        from app.qa.models import QaSession, QaMessage
+
+        since = utcnow() - timedelta(days=29)
+        days_ago = [(utcnow() - timedelta(days=29 - i)).date() for i in range(30)]
+
+        # 1. Document upload trend (30d, zero-filled)
+        upload_result = await self.session.execute(
+            select(func.date(Document.uploaded_at).label("date"), func.count().label("cnt"))
+            .where(
+                Document.deleted == False,
+                Document.uploaded_at.isnot(None),
+                Document.uploaded_at >= since,
+            )
+            .group_by(func.date(Document.uploaded_at))
+        )
+        upload_map = {str(r.date): r.cnt for r in upload_result}
+        upload_trend = [
+            {"date": str(day), "count": upload_map.get(str(day), 0)} for day in days_ago
+        ]
+
+        # 2. Document format distribution
+        fmt_result = await self.session.execute(
+            select(Document.file_ext, func.count().label("cnt"))
+            .where(Document.deleted == False)
+            .group_by(Document.file_ext)
+            .order_by(func.count().desc())
+        )
+        formats = [
+            {"ext": (r.file_ext or "unknown").upper() or "unknown", "count": r.cnt}
+            for r in fmt_result
+        ]
+
+        # 3. Daily active users (QA askers, 30d, zero-filled)
+        dau_result = await self.session.execute(
+            select(
+                func.date(QaSession.created_at).label("date"),
+                func.count(distinct(QaSession.user_id)).label("dau"),
+            )
+            .where(QaSession.created_at >= since)
+            .group_by(func.date(QaSession.created_at))
+        )
+        dau_map = {str(r.date): r.dau for r in dau_result}
+        active_trend = [
+            {"date": str(day), "users": dau_map.get(str(day), 0)} for day in days_ago
+        ]
+
+        # 4. Evidence-level distribution of assistant answers
+        ev_result = await self.session.execute(
+            select(QaMessage.evidence_level, func.count().label("cnt"))
+            .where(QaMessage.role == "ASSISTANT")
+            .group_by(QaMessage.evidence_level)
+        )
+        evidence = {}
+        for level, cnt in ev_result:
+            key = level or "UNKNOWN"
+            evidence[key] = evidence.get(key, 0) + cnt
+        # Legacy rows (pre evidence_level): NO_EVIDENCE reason → NONE
+        legacy_none = (await self.session.execute(
+            select(func.count()).select_from(QaMessage).where(
+                QaMessage.role == "ASSISTANT",
+                QaMessage.evidence_level.is_(None),
+                QaMessage.reason_code == "NO_EVIDENCE",
+            )
+        )).scalar() or 0
+        if legacy_none:
+            evidence["NONE"] = evidence.get("NONE", 0) + legacy_none
+            evidence["UNKNOWN"] = evidence.get("UNKNOWN", 0) - legacy_none
+            if evidence["UNKNOWN"] <= 0:
+                evidence.pop("UNKNOWN", None)
+        ordered = ["SUFFICIENT", "PARTIAL", "WEAK", "NONE", "UNKNOWN"]
+        evidence_dist = [
+            {"level": lv, "count": evidence.get(lv, 0)} for lv in ordered
+        ]
+
+        # Totals
+        total_qa = (await self.session.execute(
+            select(func.count()).select_from(QaSession)
+        )).scalar() or 0
+        refused_qa = (await self.session.execute(
+            select(func.count()).select_from(QaMessage).where(
+                QaMessage.role == "ASSISTANT",
+                QaMessage.reason_code == "NO_EVIDENCE",
+            )
+        )).scalar() or 0
+
+        return {
+            "uploadTrend": upload_trend,
+            "formats": formats,
+            "activeTrend": active_trend,
+            "evidenceDistribution": evidence_dist,
+            "totalQa": total_qa,
+            "refusedQa": refused_qa,
+        }

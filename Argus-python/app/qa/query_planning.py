@@ -35,7 +35,23 @@ class QueryPlanningService:
             temperature=0.1,
         )
 
-    async def plan(self, question: str) -> dict:
+    async def _get_chat_model(self, user_id: int) -> ChatOpenAI:
+        from app.models_config.resolver import get_chat_config
+        try:
+            cfg = await get_chat_config(user_id)
+            if cfg:
+                return ChatOpenAI(
+                    model=cfg["model_name"],
+                    openai_api_key=cfg["api_key"],
+                    openai_api_base=cfg["base_url"],
+                    temperature=0.1,
+                )
+        except Exception:
+            pass
+        return self.chat_model
+
+    async def plan(self, question: str, user_id: int = 1) -> dict:
+        chat_model = await self._get_chat_model(user_id)
         prompt = f"""分析以下问题，决定最佳查询策略。
 
 策略选项：
@@ -49,7 +65,7 @@ class QueryPlanningService:
 问题: {question}"""
 
         try:
-            response = await self.chat_model.ainvoke([HumanMessage(content=prompt)])
+            response = await chat_model.ainvoke([HumanMessage(content=prompt)])
             raw = response.content.strip()
             raw = re.sub(r"```(?:json)?\s*", "", raw).strip("` ").strip()
 

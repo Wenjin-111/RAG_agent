@@ -17,12 +17,46 @@ router = APIRouter()
 
 @router.get("/sessions")
 async def list_sessions(
+    status: str = Query(default="ACTIVE"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     service = AssistantService(db)
-    sessions = await service.list_sessions(current_user.user_id)
+    sessions = await service.list_sessions(current_user.user_id, status=status)
     return sessions  # Frontend expects direct array
+
+
+@router.post("/sessions/{session_id}/archive")
+async def archive_session(
+    session_id: int,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AssistantService(db)
+    await service.archive_session(current_user.user_id, session_id)
+    return ApiResponse.ok(message="会话已归档")
+
+
+@router.post("/sessions/{session_id}/restore")
+async def restore_session(
+    session_id: int,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AssistantService(db)
+    await service.restore_session(current_user.user_id, session_id)
+    return ApiResponse.ok(message="会话已恢复")
+
+
+@router.post("/sessions/{session_id}/summarize")
+async def summarize_session(
+    session_id: int,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AssistantService(db)
+    summary = await service.refresh_summary(current_user.user_id, session_id)
+    return ApiResponse.ok(data={"summaryText": summary})
 
 
 @router.post("/sessions")
@@ -72,11 +106,13 @@ async def delete_session(
 @router.get("/sessions/{session_id}/messages")
 async def list_messages(
     session_id: int,
+    before_id: int | None = Query(default=None, alias="beforeId"),
+    limit: int = Query(default=30, ge=1, le=100),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     service = AssistantService(db)
-    messages = await service.list_messages(session_id)
+    messages = await service.list_messages(session_id, before_id=before_id, limit=limit)
     return ApiResponse.ok(data=messages)
 
 

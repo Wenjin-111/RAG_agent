@@ -35,6 +35,16 @@ async def overview(
     return ApiResponse.ok(data=result)
 
 
+@router.get("/insights")
+async def insights(
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = LlmUsageStatisticsService(db)
+    result = await service.insights()
+    return ApiResponse.ok(data=result)
+
+
 @router.get("/trend")
 async def trend(
     days: int = 30,

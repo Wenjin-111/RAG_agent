@@ -17,6 +17,14 @@ PRICING = {
     "deepseek-reasoner": {"input": 0.002, "output": 0.008},
 }
 
+# 中文场景经验系数：约 1 token / 1.5 字符
+CHARS_PER_TOKEN = 1.5
+
+
+def estimate_tokens(text: str) -> int:
+    """按字符数估算 token 数（实际调用无真实用量时使用）。"""
+    return int(len(text or "") / CHARS_PER_TOKEN)
+
 
 class LlmUsageCollector:
     def __init__(self, session: AsyncSession):

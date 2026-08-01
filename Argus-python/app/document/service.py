@@ -290,7 +290,12 @@ class DocumentQueryService:
         data = storage_service.download(doc.storage_object_key)
         return data, doc.file_name, doc.content_type
 
-    async def delete(self, user_id: int, document_id: int) -> None:
+    async def delete(self, user_id: int, document_id: int) -> dict:
+        """Soft-delete a document and clean its indexes/storage.
+
+        Returns per-step cleanup status so callers can surface failures
+        (e.g. leftover vectors would resurface in retrieval).
+        """
         result = await self.session.execute(select(Document).where(Document.id == document_id))
         doc = result.scalar_one_or_none()
         if doc is None or doc.deleted:
@@ -308,31 +313,36 @@ class DocumentQueryService:
         )
         logger.info("Deleted %d chunks for document %s", chunk_result.rowcount, document_id)
 
+        cleanup = {"vector": True, "es": True, "storage": True}
+
         # 3. Clean vector embeddings
         try:
             from app.engine.vector_store import PgVectorRetrievalAdapter
             from app.config import settings
-            from app.dependencies import engine
             adapter = PgVectorRetrievalAdapter(settings.database_url)
             await adapter.delete_by_document_ids([document_id])
-        except Exception:
-            logger.warning("Failed to delete vectors for document %s", document_id)
+        except Exception as e:
+            cleanup["vector"] = False
+            logger.error("Failed to delete vectors for document %s: %s", document_id, e)
 
         # 4. Clean ES index
         try:
             from app.engine.es_service import es_service
             await es_service.delete_by_document_ids([document_id])
-        except Exception:
-            logger.warning("Failed to delete ES entries for document %s", document_id)
+        except Exception as e:
+            cleanup["es"] = False
+            logger.error("Failed to delete ES entries for document %s: %s", document_id, e)
 
         # 5. Delete MinIO object
         try:
             storage_service.delete(doc.storage_object_key)
-        except Exception:
-            logger.warning("Failed to delete MinIO object: %s", doc.storage_object_key)
+        except Exception as e:
+            cleanup["storage"] = False
+            logger.error("Failed to delete MinIO object %s: %s", doc.storage_object_key, e)
 
         await self.session.flush()
-        logger.info("Document deleted: id=%s, by=%s", document_id, user_id)
+        logger.info("Document deleted: id=%s, by=%s, cleanup=%s", document_id, user_id, cleanup)
+        return cleanup
 
     async def _get_doc(self, document_id: int) -> Document:
         result = await self.session.execute(
