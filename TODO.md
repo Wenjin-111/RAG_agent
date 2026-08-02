@@ -1,84 +1,125 @@
-# TODO — Agent 能力扩展
+# TODO
 
-> 状态：方案讨论中，尚未实施。决策确认后按此文档实施。
+> 本文件记录待实施的方案。分节记录，各自独立。
+
+---
+
+# 一、管理助手（管理员 Agent）
+
+> 状态：方案已定稿（2026-08-02 决策确认），待实施。
 
 ## 背景
 
-当前 Assistant（AI 助手）只有 `knowledge_base_search` 一个工具，且仅 KB_SEARCH 模式可用；CHAT 模式 `tools=[]`（`app/assistant/agent/factory.py:42`）。本批需求扩展 Agent 的工具能力与可观测性。
+现有 Assistant 只有 `knowledge_base_search` 一个工具（仅 KB_SEARCH 模式）。本需求为**管理员**新增一个"管理助手"：独立入口 + 管理类工具（文档/群组）+ 工具调用可视化（实时卡片 + 落库回显）。普通用户工具扩展见文末"后续"。
+
+**已确认决策**：独立管理页（/admin/assistant）｜可视化一起做｜普通用户暂不做｜一条调用一条 TOOL 消息｜参数截断 200 / 结果截断 500｜**含写操作**（对话确认机制）。
 
 ---
 
-## 需求 1：更多 Agent 工具
+## 工具集（9 个）
 
-**目标**：Agent 能管理文档、查看群组，而不只是搜索内容。
-
-**新工具清单**（复用现有 service，新增 `app/assistant/agent/tools.py`）：
+读工具（蓝色卡片）：
 
 | 工具 | 参数 | 数据来源 |
 |---|---|---|
-| `list_my_groups` | 无 | group service（无需 group_id，无权限问题） |
-| `list_group_documents` | group_id, status? | DocumentQueryService.list_documents |
-| `list_group_members` | group_id | GroupMembershipService.list_members |
-| `get_group_stats` | group_id | 轻量统计（文档数/切片数/成员数） |
-| `knowledge_base_search` | query, group_id | 已有 |
+| `list_groups` | 无 | 群组 admin 全量列表 |
+| `get_group_stats` | group_id | 群组详情（文档数/存储/成员数） |
+| `list_group_members` | group_id | 群组成员 |
+| `list_documents` | group_id?, status?, keyword? | 文档 admin 分页 |
+| `search_knowledge` | query | 复用现有 HybridChunkRetrievalService |
 
-**安全约束**：带 group_id 的工具内部必须调 `require_group_access(user_id, system_role, group_id)` 校验成员身份；校验失败返回"无权访问"，由 Agent 如实告知用户。
+写工具（琥珀色卡片，**必须对话确认后调用**）：
 
-## 需求 2：多工具协作
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `ban_group` | group_id | 停用群组 |
+| `unban_group` | group_id | 恢复群组 |
+| `delete_document` | document_id | 删除文档 |
 
-**目标**：Agent 在一轮对话中调用多个工具（如：list_my_groups → 选群组 → 列文档 → 搜索内容）。
+**写操作确认机制（对话确认）**：
+- 管理助手 prompt 强约束：涉及停用/删除必须先向用户说明影响（群组名/文档名）并取得明确同意，才能调用写工具
+- 工具描述中同样注明"仅当用户明确同意后调用"
+- 前端写工具卡片用琥珀色警示
+- 后续升级项：LangGraph `interrupt()` 硬确认（human-in-the-loop）
 
-**现状障碍**：
-- CHAT 模式 `tools=[]`
-- KB_SEARCH 模式 `has_completed_search` 限制每轮仅 1 次搜索
+## 权限模型
 
-**设计**：
-- CHAT 模式开放全部工具；KB_SEARCH 保持单工具 + 单次搜索（检索模式的产品语义）
-- `recursion_limit` 10 → 15~20（多轮工具调用消耗轮次，`factory.py`）
-- 工具返回统一 JSON 格式（found / data / message）
+- `config` 传 `system_role`，所有管理工具内部校验 `system_role == "ADMIN"`，非管理员返回"无权访问"（工具层校验，防绕过前端）
+- 创建 agent 时按角色挂载工具：仅 ADMIN 挂管理工具（双保险）
+- 工具复用现有 admin service（`AdminUserService` / group service / document service），不重复实现
 
-## 需求 3：工具调用可视化
+## 工具调用处理（可视化 + 落库）
 
-**目标**：前端展示 Agent 的"思考过程"——调用了哪些工具、参数是什么、结果如何。
+**事件捕获**（`facade.py`，沿用 LangGraph `astream_events` 标准模式）：
+- `on_tool_start`：`event["name"]` + `event["data"]["input"]` → SSE `tool_start` {id, name, args}
+- `on_tool_end`：`event["data"]["output"]` → SSE `tool_end` {id, name, result(截断500), status}
+- 稳定 key 用 `event["run_id"]`（前端原地更新卡片）
+- 同时追加到 `result_holder.tool_calls`（流结束后落库）
 
-**现状**：
-- 后端从不保存 TOOL 消息（`service.py` 只存 USER/ASSISTANT）
-- `facade.chat_stream` 只捕获 `on_tool_end` 提取 citations，无 `on_tool_start`
-- 前端 `AssistantMessage.vue` 已有 TOOL 消息 `<details>` 折叠样式基础，但只显示 content 原文
+**落库**：
+- `AssistantMessage.role` 扩展 `TOOL`（现有 USER/ASSISTANT）
+- 一条工具调用 = 一条 TOOL 消息，content 存 JSON：`{tool_name, args, result, status}`（args 截断 200 / result 截断 500）
+- 角色顺序：USER → TOOL... → ASSISTANT
 
-**设计（实时 + 落库双轨）**：
-- 后端：facade 补捕获 `on_tool_start` / `on_tool_end` → SSE 新增 `tool_start` {name, args} / `tool_end` {name, result 截断} 事件
-- 后端：工具调用落库为 TOOL 消息（content 存 JSON：tool_name / args / result），重进会话可查
-- 前端：流式时插入"工具调用"卡片（工具名 + 参数 + 结果摘要，可折叠，按顺序堆叠）；历史 TOOL 消息从 DB 加载并结构化渲染
+**会话区分**：
+- `AssistantSession` 加 `mode` 字段（CHAT / KB_SEARCH / ADMIN），管理助手会话 mode=ADMIN，会话列表按 mode 过滤
+
+## 前端
+
+**流式工具卡片**（扩展 `AssistantMessage.vue` / 新增组件）：
+- `tool_start` 到达 → 插入卡片（工具名 + 参数摘要 + 加载动画，默认展开）
+- `tool_end` 到达 → 原地更新（成功显示结果摘要、失败红字；超长截断 + 点击展开）
+- 读工具蓝调 / 写工具琥珀调；多工具按顺序堆叠
+
+**管理助手页面** `/admin/assistant`：
+- 管理控制台侧边栏入口，独立会话列表（mode=ADMIN）
+- 历史 TOOL 消息 → 同款卡片（默认收起）
+
+## 实施清单
+
+1. 后端 `tools.py`：新增 8 个工具（5 读 + 3 写），全部校验 ADMIN；写工具返回格式带 warning
+2. 后端 `factory.py`：新增 `ADMIN` tool_mode，挂全部工具；recursion_limit 10 → 15
+3. 后端 `facade.py`：捕获 on_tool_start / on_tool_end → SSE 事件 + result_holder.tool_calls
+4. 后端 `models.py`：AssistantSession.mode 字段；AssistantMessage.role 支持 TOOL
+5. 后端 `service.py`：TOOL 消息落库（args/result 截断）；历史加载包含 TOOL 消息
+6. 后端 `router.py`：SSE 事件扩展（tool_start / tool_end）；会话列表按 mode 过滤
+7. 前端 `types/assistant.ts` / `api/assistant.ts`：事件类型 + TOOL 消息类型
+8. 前端：管理助手页面（路由 + 菜单 + 会话列表 + 聊天区）
+9. 前端：工具卡片组件（流式 + 历史回显）
+10. 验证：admin 权限校验、多工具协作、写工具确认链路、历史 TOOL 回显
 
 ---
 
-## 待决策问题（确认后开始实施）
+## 后续（普通用户工具扩展）
 
-- [ ] **P1 工具集开放范围**
-  - A. CHAT 全开放（推荐）：CHAT 挂全部 5 个工具；KB_SEARCH 保持单工具 + 单次搜索
-  - B. 只加管理工具：文档/群组工具全局可用，KB 搜索仍只限 KB_SEARCH
-  - C. 全部模式全开放：KB_SEARCH 也取消单次搜索限制
-
-- [ ] **P2 CHAT 模式群组确定方式**
-  - A. 选择器 + 自发现（推荐）：CHAT 模式 Composer 可选群组（选了就传给 Agent）；没选时 Agent 用 `list_my_groups` 自发现或询问
-  - B. 仅 Agent 自发现：CHAT 不传群组，一律靠工具/对话确认
-  - C. 必须显式选择：CHAT 也要先选群组才能提问
-
-- [ ] **P3 可视化是否持久化**
-  - A. 实时 + 落库持久化（推荐）：流式实时卡片 + TOOL 消息落库，历史可查
-  - B. 仅实时展示：不落库，重进会话看不到工具调用
+TODO 旧方案（list_my_groups / list_group_documents / list_group_members / get_group_stats，带 `require_group_access` 校验，CHAT 模式开放）——管理员助手落地后再做，机制完全复用。
 
 ---
 
-## 实施清单（决策后按序执行）
+# 二、ES 安装 IK 中文分词插件
 
-1. `app/assistant/agent/tools.py`：新增 4 个工具（list_my_groups / list_group_documents / list_group_members / get_group_stats），带 group_id 的工具加权限校验
-2. `app/assistant/agent/factory.py`：按决策开放工具集；recursion_limit 调整
-3. `app/assistant/agent/facade.py`：捕获 on_tool_start / on_tool_end，输出结构化事件；返回工具调用记录
-4. `app/assistant/service.py`：工具调用落库 TOOL 消息（chat / chat_stream）
-5. `app/assistant/router.py`：SSE 事件扩展（tool_start / tool_end）
-6. 前端 `types/assistant.ts` / `api/assistant.ts`：事件类型扩展
-7. 前端 `AssistantView.vue`：流式工具卡片渲染
-8. 前端 `AssistantMessage.vue`：TOOL 消息结构化展示（工具名/参数/结果）
-9. 验证：权限校验（非成员调工具拒绝）、多工具协作链路、历史 TOOL 消息回显
+> 状态：待办。2026-08-02 排查 ES 检索 0 命中时发现。
+
+## 背景
+
+docker-compose.yml 中 ES 用的是官方原版镜像（`docker.elastic.co/elasticsearch/elasticsearch:8.15.0`，注释写"+ IK 中文分词"但实际从未安装插件）。`ensure_index` 创建索引时指定的 `ik_max_word_analyzer` 实际失败（代码只 `logger.warning` 未报错），当前索引 mapping 是 standard 逐字分词 → **中文全文检索质量差**（短语匹配基本失效）。已确认：`settings.analysis` 为空、`ik_max_word_analyzer` 分析器不存在。
+
+## 方案（推荐 A）
+
+- **A. 换镜像（推荐）**：`image: medcl/elasticsearch:8.15.0`（ik 作者维护，版本对齐官方）→ `docker compose up -d elasticsearch` 重建。改一行，1 分钟。
+- B. 手动装进现有容器：`docker exec argus-es bin/elasticsearch-plugin install --batch https://get.infini.cloud/elasticsearch/analysis-ik/8.15.0` + restart。容器重建后需重装，不持久。
+- C. Dockerfile 自定义镜像（最正规，多一个文件，build 流程带插件）。
+
+## 数据影响与恢复
+
+- ik 只对新索引生效，**旧索引 mapping 定死必须删掉重建**（删除后 ES 检索数据丢失；PG 向量、DB chunks 不受影响）。
+- 已有 READY 文档恢复方式：写一次性脚本遍历已 READY 文档，从 `document_chunks` 读 chunks 重新写入 ES（不用重传文件）。
+- 新索引由 `ensure_index` 启动时自动创建（带 ik 分析器）。
+
+## 实施清单
+
+1. docker-compose.yml 换 medcl 镜像（或按方案 B/C 装插件）
+2. 删除旧索引：`curl -X DELETE http://127.0.0.1:9200/new_rag_document_chunks`（或 `DELETE /rag_document_chunks`，确认实际索引名）
+3. `docker compose up -d elasticsearch` 重建 + 重启后端
+4. 写一次性重索引脚本：遍历已 READY 文档 → 读 chunks → `es_service.index_chunks` 重建 ES 数据
+5. 验证：`_analyze` 接口确认 ik 分词生效；真实 QA 检索中文短语命中
