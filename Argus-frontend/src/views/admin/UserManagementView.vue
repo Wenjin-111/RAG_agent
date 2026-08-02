@@ -194,7 +194,7 @@ async function handleCreateUser() {
   creating.value = true
   try {
     await createAdminUser({ username: username.trim(), email: email.trim(), displayName: displayName.trim() })
-    ElMessage.success('用户已创建（初始密码 Admin@123456，首次登录需修改）')
+    ElMessage.success('用户已创建（初始密码 123456Abc.，首次登录需修改）')
     createVisible.value = false
     createForm.value = { username: '', email: '', displayName: '' }
     await loadUsers()
@@ -382,10 +382,10 @@ onUnmounted(() => {
               @click="openUserDetail(user.userId)"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="1.5" />
-                <circle cx="12" cy="5" r="1.5" />
-                <circle cx="12" cy="19" r="1.5" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
               </svg>
+              详情
             </button>
             <button
               class="row-btn row-btn--usage"
@@ -395,6 +395,7 @@ onUnmounted(() => {
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M3 3v16a2 2 0 002 2h16M7 13l4-4 3 3 5-6" />
               </svg>
+              用量
             </button>
             <button
               class="row-btn"
@@ -410,7 +411,7 @@ onUnmounted(() => {
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v-2m0-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z" />
                 </svg>
-                当前用户
+                <span class="current-user-label">当前<br />用户</span>
               </template>
               <template v-else>
                 <svg v-if="user.status === 'ACTIVE'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -549,7 +550,7 @@ onUnmounted(() => {
         <el-form-item label="显示名称">
           <el-input v-model="createForm.displayName" placeholder="用户显示名称" maxlength="128" />
         </el-form-item>
-        <p class="create-hint">初始密码为 <code>Admin@123456</code>，用户首次登录后需修改密码。</p>
+        <p class="create-hint">初始密码为 <code>123456Abc.</code>，用户首次登录后需修改密码。</p>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -646,6 +647,13 @@ onUnmounted(() => {
 
 .row-btn--usage {
   color: var(--brand-primary);
+}
+
+.current-user-label {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.2;
+  text-align: center;
 }
 
 /* ════════════ Page Layout ════════════ */

@@ -4,6 +4,7 @@ import { fetchAuditLogs, type AuditLogItem } from '@/api/admin'
 import { extractApiError } from '@/api/http'
 
 const ACTION_LABELS: Record<string, string> = {
+  DOCUMENT_UPLOAD: '上传文档',
   DOCUMENT_DELETE: '删除文档',
   DOCUMENT_RETRY: '重试文档',
   GROUP_BAN: '停用群组',
@@ -37,7 +38,9 @@ function formatTime(iso: string | null): string {
 function detailText(item: AuditLogItem): string {
   const d = item.detail ?? {}
   const parts: string[] = []
+  if (d.fileName) parts.push(`文件:${d.fileName}`)
   if (d.groupName) parts.push(`群组:${d.groupName}`)
+  if (d.isDuplicate) parts.push('重复上传')
   if (d.status) parts.push(`状态:${d.status}`)
   if (d.modelName) parts.push(`模型:${d.modelName}`)
   if (d.username) parts.push(`用户:${d.username}`)

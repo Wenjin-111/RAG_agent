@@ -364,7 +364,7 @@ export async function fetchAuditLogs(params: {
 }
 
 /**
- * 管理员创建用户（初始密码 Admin@123456，首次登录需修改）
+ * 管理员创建用户（初始密码 123456Abc.，首次登录需修改）
  *
  * POST /api/admin/users
  */

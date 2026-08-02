@@ -30,10 +30,12 @@ interface ModelConfigItem {
 
 const chatModels = ref<ModelConfigItem[]>([])
 const embModels = ref<ModelConfigItem[]>([])
+const mineruModels = ref<ModelConfigItem[]>([])
 const modelsLoading = ref(false)
 
 // ── Add model form ──
-const showAddForm = ref<'chat' | 'embedding' | null>(null)
+type ModelType = 'chat' | 'embedding' | 'mineru'
+const showAddForm = ref<ModelType | null>(null)
 const addForm = reactive({ displayName: '', baseUrl: '', apiKey: '', modelName: '' })
 const addLoading = ref(false)
 const addError = ref('')
@@ -42,22 +44,24 @@ const testResult = ref<{ ok: boolean; message: string } | null>(null)
 async function loadModels() {
   modelsLoading.value = true
   try {
-    const [chat, emb] = await Promise.all([
+    const [chat, emb, mineru] = await Promise.all([
       http.get<ApiResponse<ModelConfigItem[]>>('/admin/model-configs', { params: { modelType: 'chat' } }),
       http.get<ApiResponse<ModelConfigItem[]>>('/admin/model-configs', { params: { modelType: 'embedding' } }),
+      http.get<ApiResponse<ModelConfigItem[]>>('/admin/model-configs', { params: { modelType: 'mineru' } }),
     ])
     chatModels.value = chat.data.data ?? []
     embModels.value = emb.data.data ?? []
+    mineruModels.value = mineru.data.data ?? []
   } catch { /* ignore */ }
   finally { modelsLoading.value = false }
 }
 
-function openAddForm(type: 'chat' | 'embedding') {
+function openAddForm(type: ModelType) {
   showAddForm.value = type
-  addForm.displayName = ''
-  addForm.baseUrl = ''
+  addForm.displayName = type === 'mineru' ? 'MinerU 文档解析' : ''
+  addForm.baseUrl = type === 'mineru' ? 'https://mineru.net' : ''
   addForm.apiKey = ''
-  addForm.modelName = ''
+  addForm.modelName = type === 'mineru' ? 'vlm' : ''
   addError.value = ''
   testResult.value = null
 }
@@ -86,8 +90,12 @@ async function testConnection() {
 }
 
 async function saveModel() {
-  if (!addForm.displayName.trim() || !addForm.baseUrl.trim() || !addForm.apiKey.trim() || !addForm.modelName.trim()) {
+  if (!addForm.displayName.trim() || !addForm.apiKey.trim() || !addForm.modelName.trim()) {
     addError.value = '请填写所有字段'
+    return
+  }
+  if (showAddForm.value !== 'mineru' && !addForm.baseUrl.trim()) {
+    addError.value = '请填写 API URL'
     return
   }
   addLoading.value = true
@@ -188,7 +196,7 @@ onMounted(() => { if (isAdmin.value) loadModels() })
     <div v-if="isAdmin" class="settings-section" style="margin-top: 16px;">
       <button class="section-trigger" :class="{ expanded: modelExpanded }" @click="modelExpanded = !modelExpanded; if (modelExpanded && chatModels.length === 0) loadModels()">
         <span class="section-trigger__icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 2a10 10 0 0 1 7 17H5a10 10 0 0 1 7-17z"/><circle cx="12" cy="12" r="3"/></svg></span>
-        <span class="section-trigger__text"><span class="section-trigger__title">添加模型</span><span class="section-trigger__desc">管理聊天大模型和嵌入大模型的配置</span></span>
+        <span class="section-trigger__text"><span class="section-trigger__title">添加模型</span><span class="section-trigger__desc">管理聊天大模型、嵌入大模型和 MinerU 文档解析的配置</span></span>
         <svg class="section-trigger__chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9" /></svg>
       </button>
       <div v-if="modelExpanded" class="section-body">
@@ -232,14 +240,36 @@ onMounted(() => { if (isAdmin.value) loadModels() })
           </div>
         </div>
 
+        <!-- MinerU parser config -->
+        <div class="model-block">
+          <div class="model-block__head">
+            <h3 class="model-block__title">MinerU 文档解析</h3>
+            <button class="btn-add" @click="openAddForm('mineru')">+ 添加</button>
+          </div>
+          <p class="model-block__hint">配置后上传的 PDF / Word / PPT / Excel / 图片统一由 MinerU 云端解析</p>
+          <div v-if="modelsLoading" class="model-list-empty">加载中...</div>
+          <div v-else-if="mineruModels.length === 0" class="model-list-empty">未配置，文档解析将不可用（或使用 .env 的 MINERU_TOKEN）</div>
+          <div v-else class="model-list">
+            <div v-for="m in mineruModels" :key="m.id" class="model-card" :class="{ active: m.isActive }" @click="activateModel(m.id)">
+              <div class="model-card__main">
+                <span class="model-card__name">{{ m.displayName }}</span>
+                <span class="model-card__model">{{ m.modelName }}</span>
+                <span v-if="m.isActive" class="model-card__badge">使用中</span>
+              </div>
+              <button class="model-card__del" title="删除" @click.stop="deleteModel(m.id)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg></button>
+            </div>
+          </div>
+        </div>
+
         <!-- Add form modal -->
         <div v-if="showAddForm" class="add-overlay" @click.self="cancelAdd">
           <div class="add-modal">
-            <h4>{{ showAddForm === 'chat' ? '添加聊天大模型' : '添加嵌入大模型' }}</h4>
-            <div class="input-group"><label>显示名称</label><input v-model="addForm.displayName" placeholder="例如：DeepSeek V3" /></div>
-            <div class="input-group"><label>API URL</label><input v-model="addForm.baseUrl" placeholder="https://api.deepseek.com/v1" /></div>
-            <div class="input-group"><label>API Key</label><input v-model="addForm.apiKey" type="password" placeholder="sk-..." /></div>
-            <div class="input-group"><label>Model Name</label><input v-model="addForm.modelName" placeholder="deepseek-chat" /></div>
+            <h4>{{ showAddForm === 'chat' ? '添加聊天大模型' : showAddForm === 'embedding' ? '添加嵌入大模型' : '添加 MinerU 文档解析' }}</h4>
+            <div class="input-group"><label>显示名称</label><input v-model="addForm.displayName" placeholder="例如：MinerU 文档解析" /></div>
+            <div v-if="showAddForm !== 'mineru'" class="input-group"><label>API URL</label><input v-model="addForm.baseUrl" placeholder="https://api.deepseek.com/v1" /></div>
+            <div class="input-group"><label>{{ showAddForm === 'mineru' ? 'Token' : 'API Key' }}</label><input v-model="addForm.apiKey" type="password" :placeholder="showAddForm === 'mineru' ? 'sk-...（mineru.net 免费创建）' : 'sk-...'" /></div>
+            <div class="input-group"><label>Model Name</label><input v-model="addForm.modelName" :placeholder="showAddForm === 'mineru' ? 'vlm / pipeline' : 'deepseek-chat'" /></div>
+            <p v-if="showAddForm === 'mineru'" class="model-block__hint">模型说明：vlm（精度高，复杂版式/扫描件/公式）、pipeline（零幻觉，内容逐字准确）</p>
             <p v-if="addError" class="form-error">{{ addError }}</p>
             <div v-if="testResult" class="test-msg" :class="{ ok: testResult.ok, fail: !testResult.ok }">{{ testResult.message }}</div>
             <div class="add-modal__btns">
@@ -293,6 +323,7 @@ onMounted(() => { if (isAdmin.value) loadModels() })
 .btn-add { padding: 6px 14px; font-size: .78rem; font-weight: 600; color: var(--brand-primary); background: rgba(74,144,217,.06); border: 1px solid rgba(74,144,217,.15); border-radius: var(--radius-sm); cursor: pointer; font-family: inherit; transition: all .15s ease; }
 .btn-add:hover { background: rgba(74,144,217,.12); }
 .model-list-empty { text-align: center; padding: 24px; font-size: .82rem; color: var(--text-muted); }
+.model-block__hint { margin: 0 0 10px; font-size: .75rem; color: var(--text-muted); line-height: 1.5; }
 .model-list { display: flex; flex-direction: column; gap: 8px; }
 .model-card { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); cursor: pointer; transition: all .15s ease; }
 .model-card:hover { border-color: var(--brand-primary); background: rgba(74,144,217,.03); }

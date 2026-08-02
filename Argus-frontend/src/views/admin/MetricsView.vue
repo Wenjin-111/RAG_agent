@@ -94,10 +94,12 @@ const trendChart = computed(() => {
   const maxRequests = Math.max(...trend.map((t) => t.requests), 1)
   const maxTokens = Math.max(...trend.map((t) => t.tokens), 1)
 
-  // 生成折线点
+  // 垂直错位分离：调用量线占底部 60% 高度、Token 线占顶部 60% 高度，
+  // 中间留 20% 间隔——两条走势同步的线不再重合（双轴图垂直位置本就相对各自刻度）
+  const ZONE = 0.6
   const toX = (i: number) => CHART_PAD_LEFT + (i / Math.max(trend.length - 1, 1)) * innerW
-  const toYRequests = (v: number) => CHART_HEIGHT - (v / maxRequests) * CHART_HEIGHT
-  const toYTokens = (v: number) => CHART_HEIGHT - (v / maxTokens) * CHART_HEIGHT
+  const toYRequests = (v: number) => CHART_HEIGHT - (v / maxRequests) * CHART_HEIGHT * ZONE
+  const toYTokens = (v: number) => (1 - v / maxTokens) * CHART_HEIGHT * ZONE
 
   const requestPoints = trend.map((t, i) => `${toX(i)},${toYRequests(t.requests)}`).join(' ')
   const tokenPoints = trend.map((t, i) => `${toX(i)},${toYTokens(t.tokens)}`).join(' ')
@@ -106,9 +108,9 @@ const trendChart = computed(() => {
   if (!lastItem) return null
   const lastX = toX(trend.length - 1)
 
-  // 面积填充路径
+  // 面积填充路径（各归其区：调用量底边 H、Token 底边 0.6H）
   const requestArea = `M${toX(0)},${CHART_HEIGHT} L${requestPoints} L${lastX},${CHART_HEIGHT} Z`
-  const tokenArea = `M${toX(0)},${CHART_HEIGHT} L${tokenPoints} L${lastX},${CHART_HEIGHT} Z`
+  const tokenArea = `M${toX(0)},${CHART_HEIGHT * ZONE} L${tokenPoints} L${lastX},${CHART_HEIGHT * ZONE} Z`
 
   // 双轴刻度：左轴（调用量）、右轴（Token）
   const yTicksRequests = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(maxRequests * f))
@@ -137,7 +139,9 @@ const trendChart = computed(() => {
     lastX,
     lastYRequest: toYRequests(lastItem.requests),
     lastYToken: toYTokens(lastItem.tokens),
-    gridYs: [0, 0.25, 0.5, 0.75, 1].map((f) => CHART_HEIGHT - f * CHART_HEIGHT),
+    // 两组网格线分别对齐各自区域（调用量 0/50%/100% 与 Token 100%/50%/0%）
+    gridYsRequests: [1, 0.5, 0].map((f) => CHART_HEIGHT - f * CHART_HEIGHT * ZONE),
+    gridYsTokens: [0, 0.5, 1].map((f) => (1 - f) * CHART_HEIGHT * ZONE),
   }
 })
 
@@ -250,7 +254,7 @@ onMounted(() => {
     <div class="section-card">
       <div class="section-card__header">
         <h2 class="section-card__title">调用趋势</h2>
-        <span class="section-card__hint">近30天概览数据</span>
+        <span class="section-card__hint">近30天 · 调用量（左轴，下区）与 Token 消耗（右轴，上区）</span>
       </div>
 
       <div v-if="trendChart" class="trend-chart-area">
@@ -267,11 +271,13 @@ onMounted(() => {
         </div>
 
         <div class="trend-chart-body">
-          <!-- 左轴：调用量 -->
+          <!-- 左轴：调用量（底部区域） -->
           <div class="trend-y-axis">
-            <span v-for="tick in trendChart.yTicksRequests.slice().reverse()" :key="'r' + tick">
-              {{ tick >= 10000 ? (tick / 1000).toFixed(0) + 'k' : tick.toLocaleString() }}
-            </span>
+            <div class="trend-y-axis__zone trend-y-axis__zone--bottom">
+              <span v-for="tick in trendChart.yTicksRequests.slice().reverse()" :key="'r' + tick">
+                {{ tick >= 10000 ? (tick / 1000).toFixed(0) + 'k' : tick.toLocaleString() }}
+              </span>
+            </div>
           </div>
 
           <!-- SVG 画布 -->
@@ -287,22 +293,28 @@ onMounted(() => {
                   <stop offset="100%" stop-color="#14b8a6" stop-opacity="0.02" />
                 </linearGradient>
               </defs>
-              <!-- 网格线 -->
+              <!-- 网格线：上下两组分别对齐调用量区与 Token 区 -->
               <line
-                v-for="(gy, gi) in trendChart.gridYs"
-                :key="'g' + gi"
+                v-for="(gy, gi) in trendChart.gridYsRequests"
+                :key="'gr' + gi"
                 :x1="0" :y1="gy" :x2="900" :y2="gy"
-                stroke="#f1f5f9" stroke-width="1"
+                stroke="#e2e8f0" stroke-width="1"
               />
-              <!-- 面积 -->
+              <line
+                v-for="(gy, gi) in trendChart.gridYsTokens"
+                :key="'gt' + gi"
+                :x1="0" :y1="gy" :x2="900" :y2="gy"
+                stroke="#e2e8f0" stroke-width="1"
+              />
+              <!-- 调用量面积 + 折线（底部区域） -->
               <path :d="trendChart.requestArea" fill="url(#trendGradBlue)" />
-              <path :d="trendChart.tokenArea" fill="url(#trendGradTeal)" />
-              <!-- 折线 -->
               <polyline
                 :points="trendChart.requestPoints"
                 fill="none" stroke="#3b82f6" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round"
               />
+              <!-- Token 面积 + 折线（顶部区域） -->
+              <path :d="trendChart.tokenArea" fill="url(#trendGradTeal)" />
               <polyline
                 :points="trendChart.tokenPoints"
                 fill="none" stroke="#14b8a6" stroke-width="2"
@@ -327,11 +339,13 @@ onMounted(() => {
               >{{ xl.label }}</span>
             </div>
           </div>
-          <!-- 右轴：Token -->
+          <!-- 右轴：Token（顶部区域） -->
           <div class="trend-y-axis trend-y-axis--right">
-            <span v-for="tick in trendChart.yTicksTokens.slice().reverse()" :key="'t' + tick">
-              {{ tick >= 10000 ? (tick / 1000).toFixed(0) + 'k' : tick.toLocaleString() }}
-            </span>
+            <div class="trend-y-axis__zone trend-y-axis__zone--top">
+              <span v-for="tick in trendChart.yTicksTokens.slice().reverse()" :key="'t' + tick">
+                {{ tick >= 10000 ? (tick / 1000).toFixed(0) + 'k' : tick.toLocaleString() }}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -659,12 +673,25 @@ onMounted(() => {
 .trend-y-axis {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
   padding-bottom: 22px;
   min-width: 40px;
   text-align: right;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* 刻度区只占各自 60% 区域：左轴贴底（调用量）、右轴贴顶（Token），与折线垂直错位一致 */
+.trend-y-axis__zone {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 60%;
+}
+.trend-y-axis__zone--bottom {
+  margin-top: auto;
+}
+.trend-y-axis__zone--top {
+  margin-bottom: auto;
 }
 
 .trend-y-axis--right {

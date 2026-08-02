@@ -23,7 +23,7 @@ const isDuplicate = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 
-const allowedExts = ['.txt', '.md', '.pdf', '.docx']
+const allowedExts = ['.txt', '.md', '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.png', '.jpg', '.jpeg', '.webp', '.bmp']
 
 function resetState() {
   file.value = null
@@ -188,7 +188,7 @@ function formatSize(bytes: number): string {
             <strong>点击选择文件</strong>
             <span>或将文件拖拽到此处</span>
           </p>
-          <p class="upload-dialog__zone-hint">支持 TXT · MD · PDF · DOCX，最大 10 MB</p>
+          <p class="upload-dialog__zone-hint">支持 TXT · MD · PDF · DOCX · PPT · XLSX · 图片，最大 10 MB</p>
         </template>
         <template v-else>
           <div class="upload-dialog__file-icon">
@@ -212,7 +212,7 @@ function formatSize(bytes: number): string {
       <input
         ref="fileInputRef"
         type="file"
-        accept=".txt,.md,.pdf,.docx"
+        accept=".txt,.md,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.bmp"
         class="upload-dialog__file-input"
         @change="onFilePicked"
       />

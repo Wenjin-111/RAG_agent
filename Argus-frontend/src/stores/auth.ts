@@ -121,21 +121,32 @@ export const useAuthStore = defineStore('auth', {
       this.currentUser = null
       applyAuthorizationHeader(null)
       localStorage.removeItem('argus_access_token')
+      localStorage.removeItem('argus_current_user_id')
     },
     setSession(accessToken: string, currentUser: CurrentUserProfile) {
       this.accessToken = accessToken
       this.currentUser = currentUser
       applyAuthorizationHeader(accessToken)
       localStorage.setItem('argus_access_token', accessToken)
+      localStorage.setItem('argus_current_user_id', String(currentUser.userId))
       // Save to account switcher list
       try {
-        const accounts = JSON.parse(localStorage.getItem('argus_accounts') ?? '[]') as Array<{userId: number; displayName: string; systemRole: string; accessToken: string}>
+        const accounts = JSON.parse(localStorage.getItem('argus_accounts') ?? '[]') as Array<{
+          userId: number
+          displayName: string
+          systemRole: string
+          accessToken: string
+          userCode: string
+          mustChangePassword: boolean
+        }>
         const filtered = accounts.filter((a: {userId: number}) => a.userId !== currentUser.userId)
         filtered.unshift({
           userId: currentUser.userId,
           displayName: currentUser.displayName,
           systemRole: currentUser.systemRole,
           accessToken,
+          userCode: currentUser.userCode ?? '',
+          mustChangePassword: currentUser.mustChangePassword ?? false,
         })
         localStorage.setItem('argus_accounts', JSON.stringify(filtered.slice(0, 5)))
       } catch { /* ignore */ }
@@ -159,6 +170,18 @@ export const useAuthStore = defineStore('auth', {
           }
         }
 
+        // The httpOnly refresh cookie belongs to the LAST logged-in account.
+        // If it does not match the session we are trying to restore, refuse to
+        // silently switch back to another account — force re-login instead.
+        const expectedUserId = localStorage.getItem('argus_current_user_id')
+        if (expectedUserId !== null) {
+          const refreshed = await this.refresh()
+          if (String(refreshed.userId) !== expectedUserId) {
+            this.clearSession()
+            return null
+          }
+          return refreshed
+        }
         return await this.refresh()
       } catch {
         this.clearSession()

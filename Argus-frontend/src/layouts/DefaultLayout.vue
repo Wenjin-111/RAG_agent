@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import http from '@/api/http'
 import type { CurrentUserProfile } from '@/api/auth'
 
 const router = useRouter()
@@ -22,6 +24,8 @@ interface SavedAccount {
   displayName: string
   systemRole: string
   accessToken: string
+  userCode: string
+  mustChangePassword: boolean
 }
 
 function getSavedAccounts(): SavedAccount[] {
@@ -38,6 +42,8 @@ function saveCurrentAccount() {
     displayName: authStore.currentUser.displayName,
     systemRole: authStore.currentUser.systemRole,
     accessToken: authStore.accessToken,
+    userCode: authStore.currentUser.userCode ?? '',
+    mustChangePassword: authStore.currentUser.mustChangePassword ?? false,
   })
   // Keep max 5 accounts
   localStorage.setItem('argus_accounts', JSON.stringify(accounts.slice(0, 5)))
@@ -57,18 +63,28 @@ function closeUserMenu() {
   showUserMenu.value = false
 }
 
-function handleSwitchAccount(account: SavedAccount) {
+async function handleSwitchAccount(account: SavedAccount) {
   showUserMenu.value = false
+  // 校验目标账号的 access token 是否仍有效。
+  // 不要走 refresh —— httpOnly cookie 可能属于其他账号，静默刷新会切错人。
+  try {
+    await http.get('/auth/me', {
+      headers: { Authorization: `Bearer ${account.accessToken}` },
+    })
+  } catch {
+    ElMessage.warning('该账号登录已过期，请重新登录后切换')
+    return // 保留当前会话，不切换
+  }
   // Save current session before switching
   saveCurrentAccount()
   // Restore target account
   authStore.clearSession()
   authStore.setSession(account.accessToken, {
     userId: account.userId,
-    userCode: '',
+    userCode: account.userCode ?? '',
     displayName: account.displayName,
     systemRole: account.systemRole as 'ADMIN' | 'USER',
-    mustChangePassword: false,
+    mustChangePassword: account.mustChangePassword ?? false,
   })
   router.go(0) // Full reload to re-init all state
 }
