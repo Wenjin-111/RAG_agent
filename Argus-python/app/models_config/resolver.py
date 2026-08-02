@@ -41,3 +41,27 @@ async def get_embedding_config(user_id: int) -> dict:
         "api_key": settings.embedding.api_key,
         "model_name": settings.embedding.model_name,
     }
+
+
+async def get_mineru_config(user_id: int) -> dict:
+    """Get MinerU document-parsing config, falling back to .env defaults.
+
+    model_configs 表中 model_type="mineru"：base_url=mineru.net, api_key=token,
+    model_name=vlm|pipeline。管理员在系统设置 → 添加模型 中维护。
+    """
+    try:
+        from app.dependencies import async_session_factory
+        async with async_session_factory() as session:
+            service = ModelConfigService(session)
+            active = await service.get_active_model(user_id, "mineru")
+            await session.commit()
+            if active:
+                return active
+    except Exception:
+        pass
+
+    return {
+        "base_url": settings.mineru.base_url,
+        "api_key": settings.mineru.token,
+        "model_name": settings.mineru.model,
+    }

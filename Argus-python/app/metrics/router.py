@@ -56,6 +56,41 @@ async def trend(
     return ApiResponse.ok(data=result)
 
 
+@router.get("/platform")
+async def platform_stats(
+    period: str = Query(default="LAST_30_DAYS"),
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = LlmUsageStatisticsService(db)
+    result = await service.aggregate_usage(since=_period_since(period))
+    return ApiResponse.ok(data=result)
+
+
+@router.get("/user/{user_id}")
+async def user_stats(
+    user_id: int,
+    period: str = Query(default="LAST_30_DAYS"),
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = LlmUsageStatisticsService(db)
+    result = await service.aggregate_usage(user_id=user_id, since=_period_since(period))
+    return ApiResponse.ok(data=result)
+
+
+@router.get("/group/{group_id}")
+async def group_stats(
+    group_id: int,
+    period: str = Query(default="LAST_30_DAYS"),
+    _admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = LlmUsageStatisticsService(db)
+    result = await service.aggregate_usage(group_id=group_id, since=_period_since(period))
+    return ApiResponse.ok(data=result)
+
+
 @router.get("/rankings/users")
 async def top_users(
     limit: int = 10,

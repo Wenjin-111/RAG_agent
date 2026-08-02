@@ -10,6 +10,7 @@ from typing import List, Dict, Optional
 from app.engine.vector_store import PgVectorRetrievalAdapter, VectorHit
 from app.engine.es_service import es_service, KeywordHit
 from app.config import settings
+from app.qa.query_planning import EvidenceLevel
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,6 @@ class RetrievedEvidenceBundle:
 
     @classmethod
     def empty(cls):
-        from app.qa.query_planning import EvidenceLevel
         return cls(documents=[], evidence_level=EvidenceLevel.NONE, evidence_guidance="")
 
 
@@ -215,8 +215,6 @@ class HybridChunkRetrievalService:
 
     def _assess_evidence(self, documents: List[EvidenceDocument],
                          candidates: List[RetrievalCandidate]) -> EvidenceLevel:
-        from app.qa.query_planning import EvidenceLevel
-
         if not documents:
             return EvidenceLevel.NONE
 

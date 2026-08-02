@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import select, func, case, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -157,6 +158,52 @@ class LlmUsageStatisticsService:
             stmt = stmt.where(*filters)
         result = await self.session.execute(stmt)
         return result.scalar() or 0
+
+    async def aggregate_usage(self, user_id: Optional[int] = None,
+                              group_id: Optional[int] = None,
+                              since=None) -> dict:
+        """Aggregate LLM usage for a user / group / the whole platform."""
+        from app.metrics.models import LlmUsageRecord
+
+        filters = []
+        if user_id is not None:
+            filters.append(LlmUsageRecord.user_id == user_id)
+        if group_id is not None:
+            filters.append(LlmUsageRecord.group_id == group_id)
+        if since is not None:
+            filters.append(LlmUsageRecord.created_at >= since)
+
+        stmt = select(
+            func.sum(LlmUsageRecord.prompt_tokens).label("prompt_tokens"),
+            func.sum(LlmUsageRecord.completion_tokens).label("completion_tokens"),
+            func.sum(LlmUsageRecord.total_tokens).label("total_tokens"),
+            func.sum(LlmUsageRecord.cost_amount).label("cost"),
+            func.count().label("requests"),
+            func.sum(case((LlmUsageRecord.success == True, 1), else_=0)).label("success"),
+            func.avg(LlmUsageRecord.latency_ms).label("avg_latency"),
+        ).where(*filters)
+        r = (await self.session.execute(stmt)).one()
+
+        total_requests = r.requests or 0
+        total_tokens = r.total_tokens or 0
+        success_requests = r.success or 0
+        # Per-minute averages over the observed window
+        window_start = since or (utcnow() - timedelta(days=30))
+        elapsed_minutes = max(1, int((utcnow() - window_start).total_seconds() / 60))
+
+        return {
+            "total_prompt_tokens": r.prompt_tokens or 0,
+            "total_completion_tokens": r.completion_tokens or 0,
+            "total_tokens": total_tokens,
+            "total_cost": float(r.cost or Decimal("0")),
+            "total_requests": total_requests,
+            "success_requests": success_requests,
+            "failed_requests": total_requests - success_requests,
+            "success_rate": round(success_requests / total_requests * 100, 1) if total_requests else 100.0,
+            "avg_latency_ms": int(r.avg_latency or 0),
+            "avg_rpm": round(total_requests / elapsed_minutes, 2),
+            "avg_tpm": round(total_tokens / elapsed_minutes, 2),
+        }
 
     async def insights(self) -> dict:
         """Platform insights: document trend/formats, DAU, evidence quality."""

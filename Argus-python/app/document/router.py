@@ -105,10 +105,17 @@ async def delete_document(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.document.models import Document
+
     await _check_document_access(db, current_user, document_id)
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if doc is None or doc.deleted:
+        raise BusinessException("文档不存在")
     service = DocumentQueryService(db)
     cleanup = await service.delete(current_user.user_id, document_id)
-    await log_audit(db, current_user, "DOCUMENT_DELETE", "document", document_id)
+    await log_audit(db, current_user, "DOCUMENT_DELETE", "document", document_id,
+                    await _document_audit_context(db, document_id))
     if all(cleanup.values()):
         return ApiResponse.ok(message="文档已删除")
     return ApiResponse.ok(message="文档已删除，但部分索引清理失败（向量/搜索/存储），可能残留影响检索，建议联系管理员")
@@ -143,7 +150,8 @@ async def retry_ingestion(
     )
     db.add(job)
     await db.flush()
-    await log_audit(db, current_user, "DOCUMENT_RETRY", "document", document_id)
+    await log_audit(db, current_user, "DOCUMENT_RETRY", "document", document_id,
+                    {"fileName": doc.file_name})
     return ApiResponse.ok(message="已重新提交处理")
 
 
@@ -167,6 +175,10 @@ async def direct_upload(
     result = await service.direct_upload(
         current_user.user_id, group_id, file_data, file.filename, content_type, file_hash
     )
+    detail = await _document_audit_context(db, result["document_id"])
+    if result.get("is_duplicate"):
+        detail["isDuplicate"] = True
+    await log_audit(db, current_user, "DOCUMENT_UPLOAD", "document", result["document_id"], detail)
     return ApiResponse.ok(data={
         "documentId": result["document_id"],
         "fileName": result["file_name"],
@@ -258,6 +270,10 @@ async def complete_upload(
 ):
     service = DocumentUploadService(db)
     result = await service.complete_upload(current_user.user_id, current_user.system_role, upload_id)
+    detail = await _document_audit_context(db, result["document_id"])
+    if result.get("is_duplicate"):
+        detail["isDuplicate"] = True
+    await log_audit(db, current_user, "DOCUMENT_UPLOAD", "document", result["document_id"], detail)
     return ApiResponse.ok(data={
         "documentId": result["document_id"],
         "fileName": result["file_name"],
@@ -274,6 +290,23 @@ async def _check_document_access(db: AsyncSession, current_user: AuthenticatedUs
     if doc is None:
         raise BusinessException("文档不存在")
     await require_group_access(db, current_user.user_id, current_user.system_role, doc.group_id)
+
+
+async def _document_audit_context(db: AsyncSession, document_id: int) -> dict:
+    """构建文档类审计日志的 detail：文件名 + 群组名 + 大小。"""
+    from app.document.models import Document
+    from app.group.models import Group
+
+    result = await db.execute(
+        select(Document.file_name, Document.file_size, Group.group_name)
+        .join(Group, Document.group_id == Group.id)
+        .where(Document.id == document_id)
+    )
+    row = result.first()
+    if row is None:
+        return {}
+    file_name, file_size, group_name = row
+    return {"fileName": file_name, "fileSize": file_size, "groupName": group_name or ""}
 
 
 # ---- Admin: global document management (requires admin) ----
@@ -374,6 +407,7 @@ async def admin_retry_document(
 ):
     from app.ingestion.models import IngestionJob
     from app.document.models import Document
+    from app.group.models import Group
 
     result = await db.execute(select(Document).where(Document.id == document_id))
     doc = result.scalar_one_or_none()
@@ -390,8 +424,11 @@ async def admin_retry_document(
         status="PENDING",
         max_retries=3,
     ))
+    group_result = await db.execute(select(Group.group_name).where(Group.id == doc.group_id))
+    group_name = group_result.scalar_one_or_none() or ""
     await db.flush()
-    await log_audit(db, _admin, "DOCUMENT_RETRY", "document", document_id)
+    await log_audit(db, _admin, "DOCUMENT_RETRY", "document", document_id,
+                    {"fileName": doc.file_name, "groupName": group_name})
     return ApiResponse.ok(message="已重新提交处理")
 
 
@@ -401,9 +438,17 @@ async def admin_delete_document(
     _admin: AuthenticatedUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.document.models import Document
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if doc is None or doc.deleted:
+        raise BusinessException("文档不存在")
+
     service = DocumentQueryService(db)
     cleanup = await service.delete(1, document_id)
-    await log_audit(db, _admin, "DOCUMENT_DELETE", "document", document_id)
+    await log_audit(db, _admin, "DOCUMENT_DELETE", "document", document_id,
+                    await _document_audit_context(db, document_id))
     if all(cleanup.values()):
         return ApiResponse.ok(message="文档已删除")
     return ApiResponse.ok(message="文档已删除，但部分索引清理失败（向量/搜索/存储），可能残留影响检索，建议检查系统日志")

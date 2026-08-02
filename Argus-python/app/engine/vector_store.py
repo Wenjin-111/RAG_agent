@@ -153,11 +153,11 @@ class PgVectorRetrievalAdapter:
         metadatas = [doc.metadata for doc in documents]
         collection_id = uuid.uuid4()
 
-        # text-embedding-v4 limits batch size to 10
-        BATCH_SIZE = 10
+        # text-embedding-v4 limits batch size to 10 (configurable via INGESTION_VECTOR_ADD_BATCH_SIZE)
+        batch_size = max(1, min(settings.ingestion.vector_add_batch_size, 10))
         all_vectors = []
-        for i in range(0, len(texts), BATCH_SIZE):
-            batch = texts[i:i + BATCH_SIZE]
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
             batch_vectors = await _embed_texts(batch)
             all_vectors.extend(batch_vectors)
 

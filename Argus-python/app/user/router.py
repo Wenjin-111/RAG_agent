@@ -63,7 +63,7 @@ async def create_user(
     )
     await log_audit(db, _admin, "USER_CREATE", "user", result["user_id"],
                     {"username": result["username"], "email": result["email"]})
-    return ApiResponse.ok(data=result, message="用户已创建，初始密码 Admin@123456（首次登录需修改）")
+    return ApiResponse.ok(data=result, message="用户已创建，初始密码 123456Abc.（首次登录需修改）")
 
 
 @router.patch("/admin/users/{user_id}/status")
@@ -86,6 +86,6 @@ async def reset_password(
     db: AsyncSession = Depends(get_db),
 ):
     service = AdminUserService(db)
-    await service.reset_password(user_id, "Admin@123456")
+    await service.reset_password(user_id, "123456Abc.")
     await log_audit(db, _admin, "USER_PASSWORD_RESET", "user", user_id)
     return ApiResponse.ok(message="密码重置成功")

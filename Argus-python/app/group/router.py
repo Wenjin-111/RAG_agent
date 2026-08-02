@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_audit
 from app.auth.dependencies import get_current_user, require_admin
+from app.common.exception.exceptions import BusinessException
 from app.common.response import ApiResponse
 from app.common.security.context import AuthenticatedUser
 from app.dependencies import get_db
-from app.group.schemas import CreateInvitationRequest
 from app.group.service import (
     GroupManagementService,
     GroupMembershipService,
@@ -86,7 +87,7 @@ async def admin_list_groups(
     _admin: AuthenticatedUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    from sqlalchemy import select, func
+    from sqlalchemy import func
     from app.group.models import Group, GroupMembership
 
     result = await db.execute(
@@ -117,7 +118,7 @@ async def admin_group_detail(
     _admin: AuthenticatedUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    from sqlalchemy import select, func
+    from sqlalchemy import func
     from app.group.models import Group
     from app.group.service import GroupMembershipService
     from app.document.models import Document
@@ -156,7 +157,6 @@ async def admin_ban_group(
     db: AsyncSession = Depends(get_db),
 ):
     from app.group.models import Group
-    from sqlalchemy import update
 
     result = await db.execute(select(Group).where(Group.id == group_id, Group.status != "DELETED"))
     group = result.scalar_one_or_none()
@@ -175,7 +175,6 @@ async def admin_unban_group(
     db: AsyncSession = Depends(get_db),
 ):
     from app.group.models import Group
-    from sqlalchemy import update
 
     result = await db.execute(select(Group).where(Group.id == group_id, Group.status != "DELETED"))
     group = result.scalar_one_or_none()
@@ -195,7 +194,6 @@ async def admin_remove_member(
     db: AsyncSession = Depends(get_db),
 ):
     from app.group.models import Group, GroupMembership
-    from sqlalchemy import delete
 
     result = await db.execute(select(Group).where(Group.id == group_id, Group.status != "DELETED"))
     group = result.scalar_one_or_none()
@@ -223,7 +221,6 @@ async def admin_dissolve_group(
     db: AsyncSession = Depends(get_db),
 ):
     """解散群组：软删群组与全部文档，清理切片/向量/搜索索引与成员关系。"""
-    from sqlalchemy import delete, update
     from app.group.models import Group, GroupMembership, GroupInvitation, GroupJoinRequest
     from app.document.models import Document
     from app.ingestion.models import DocumentChunk

@@ -71,6 +71,17 @@ class DevAdminSettings(BaseSettings):
     display_name: str = "System Admin"
 
 
+class MineruSettings(BaseSettings):
+    """MinerU 云端文档解析 API 配置（https://mineru.net 免费 token）"""
+    model_config = SettingsConfigDict(env_prefix="MINERU_")
+    token: str = ""
+    model: str = "vlm"  # vlm（精度高）/ pipeline（零幻觉）
+    base_url: str = "https://mineru.net"
+    poll_interval: float = 3.0
+    poll_timeout: int = 600
+    max_file_size: int = 200 * 1024 * 1024
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -95,6 +106,7 @@ class Settings(BaseSettings):
     elasticsearch: ElasticsearchSettings = Field(default_factory=ElasticsearchSettings)
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
     dev_admin: DevAdminSettings = Field(default_factory=DevAdminSettings)
+    mineru: MineruSettings = Field(default_factory=MineruSettings)
 
 
 settings = Settings()

@@ -97,6 +97,8 @@ class ModelConfigService:
 
     @staticmethod
     async def test_connection(base_url: str, api_key: str, model_name: str, model_type: str) -> dict:
+        if model_type == "mineru":
+            return await ModelConfigService._test_mineru(base_url, api_key, model_name)
         url = base_url.rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=15) as client:
@@ -115,5 +117,25 @@ class ModelConfigService:
                 if resp.status_code < 500:
                     return {"ok": True, "status": resp.status_code, "message": "连接成功"}
                 return {"ok": False, "status": resp.status_code, "message": f"API 返回 {resp.status_code}"}
+        except Exception as e:
+            return {"ok": False, "status": 0, "message": str(e)[:200]}
+
+    @staticmethod
+    async def _test_mineru(base_url: str, api_key: str, model_name: str) -> dict:
+        """验证 MinerU token：申请一次上传链接（不消耗解析额度）"""
+        url = (base_url or "https://mineru.net").rstrip("/") + "/api/v4/file-urls/batch"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    url,
+                    json={"files": [{"name": "connection-test.pdf"}],
+                          "model_version": model_name or "vlm"},
+                    headers={"Content-Type": "application/json",
+                             "Authorization": f"Bearer {api_key}"},
+                )
+            data = resp.json()
+            if data.get("code") == 0:
+                return {"ok": True, "status": resp.status_code, "message": "连接成功"}
+            return {"ok": False, "status": resp.status_code, "message": data.get("msg", "连接失败")}
         except Exception as e:
             return {"ok": False, "status": 0, "message": str(e)[:200]}

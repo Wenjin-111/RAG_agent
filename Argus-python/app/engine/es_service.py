@@ -135,26 +135,42 @@ class ElasticsearchChunkIndexService:
             return []
 
     async def index_chunks(self, file_name: str, chunks: list) -> None:
-        for chunk in chunks:
-            doc = {
-                "documentId": chunk.document_id,
-                "groupId": chunk.group_id,
-                "chunkId": chunk.id,
-                "chunkIndex": chunk.chunk_index,
-                "chunkText": chunk.chunk_text,
-                "fileName": file_name,
-                "status": "READY",
-                "deleted": False,
-            }
+        if not chunks:
+            return
+        # Bulk API: NDJSON (action line + source line), batched to bound memory
+        BULK_BATCH = 100
+        for i in range(0, len(chunks), BULK_BATCH):
+            batch = chunks[i:i + BULK_BATCH]
+            lines = []
+            for chunk in batch:
+                lines.append(json.dumps({"index": {"_index": self.index_name, "_id": chunk.id}}))
+                lines.append(json.dumps({
+                    "documentId": chunk.document_id,
+                    "groupId": chunk.group_id,
+                    "chunkId": chunk.id,
+                    "chunkIndex": chunk.chunk_index,
+                    "chunkText": chunk.chunk_text,
+                    "fileName": file_name,
+                    "status": "READY",
+                    "deleted": False,
+                }))
             try:
-                resp = await self.client.put(
-                    f"{self.base_url}/{self.index_name}/_doc/{chunk.id}",
-                    json=doc,
+                resp = await self.client.post(
+                    f"{self.base_url}/_bulk",
+                    content="\n".join(lines) + "\n",
+                    headers={"Content-Type": "application/x-ndjson"},
                 )
                 if resp.status_code >= 400:
-                    logger.error("ES index doc error: %s", resp.text)
+                    logger.error("ES bulk index error: %s", resp.text[:500])
+                    continue
+                data = resp.json()
+                errors = [item for item in data.get("items", [])
+                          if (item.get("index") or {}).get("error")]
+                if errors:
+                    logger.error("ES bulk partial errors: %d/%d",
+                                 len(errors), len(batch))
             except Exception as e:
-                logger.error("ES index chunk %s failed: %s", chunk.id, e)
+                logger.error("ES bulk index failed (batch at %d): %s", i, e)
 
     async def delete_by_document_ids(self, document_ids: List[int]) -> None:
         body = {"query": {"terms": {"documentId": document_ids}}}

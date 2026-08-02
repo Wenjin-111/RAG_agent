@@ -46,7 +46,9 @@ class EtlDocumentIngestionProcessor:
         await self.session.execute(
             update(Document).where(Document.id == document_id).values(status=DOC_STATUS_PROCESSING)
         )
-        await self.session.flush()
+        # 立即提交，否则 PROCESSING 会被同事务内后续的 READY/FAILED 覆盖，
+        # 外部查询永远看不到"处理中"状态
+        await self.session.commit()
 
         try:
             # 1. Read file from MinIO

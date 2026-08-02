@@ -111,7 +111,7 @@ class AdminUserService:
             username=username,
             email=email,
             display_name=display_name,
-            password_hash=hash_password("Admin@123456"),
+            password_hash=hash_password("123456Abc."),
             system_role=SystemRole.USER.value,
             status=UserStatus.ACTIVE.value,
             must_change_password=True,
