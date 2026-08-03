@@ -22,8 +22,8 @@ import type {
  *
  * @returns 创建成功的会话详情
  */
-export async function createAssistantSession(): Promise<AssistantSessionDetail> {
-  const { data } = await http.post<ApiResponse<AssistantSessionDetail>>('/assistant/sessions')
+export async function createAssistantSession(mode: 'CHAT' | 'KB_SEARCH' | 'ADMIN' = 'CHAT'): Promise<AssistantSessionDetail> {
+  const { data } = await http.post<ApiResponse<AssistantSessionDetail>>('/assistant/sessions', { mode })
   if (!data.success || data.data == null) {
     throw new Error(data.message ?? '创建会话失败')
   }
@@ -40,9 +40,12 @@ export async function createAssistantSession(): Promise<AssistantSessionDetail> 
  * @param status 会话状态过滤：ACTIVE（默认）/ ARCHIVED
  * @returns 会话简要信息列表
  */
-export async function fetchAssistantSessions(status: 'ACTIVE' | 'ARCHIVED' = 'ACTIVE'): Promise<AssistantSessionListItem[]> {
+export async function fetchAssistantSessions(
+  status: 'ACTIVE' | 'ARCHIVED' = 'ACTIVE',
+  mode?: 'CHAT' | 'KB_SEARCH' | 'ADMIN',
+): Promise<AssistantSessionListItem[]> {
   const { data } = await http.get<AssistantSessionListItem[]>('/assistant/sessions', {
-    params: { status },
+    params: { status, mode },
   })
   return data
 }

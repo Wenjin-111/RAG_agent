@@ -26,8 +26,9 @@
  * Assistant Agent 每次对话需指定一种工具模式，决定其可调用的工具集：
  * - `CHAT`：自由对话模式，Agent 可以搜索知识库、计算、调用外部 API
  * - `KB_SEARCH`：知识库检索模式，限定在指定群组知识库中搜索并生成带引用回答
+ * - `ADMIN`：管理助手模式（仅管理员），可管理群组和文档（列表/统计/搜索/停用/删除）
  */
-export type AssistantToolMode = 'CHAT' | 'KB_SEARCH'
+export type AssistantToolMode = 'CHAT' | 'KB_SEARCH' | 'ADMIN'
 
 /**
  * 消息角色
@@ -211,6 +212,8 @@ export interface AssistantChatPayload {
    * 传入后 Agent 在该群组的知识库范围内搜索文档。
    */
   groupId?: number | null
+  /** human-in-the-loop 恢复值：写操作确认时传 "confirm" / "cancel" */
+  resume?: string | null
 }
 
 /**
@@ -246,14 +249,44 @@ export interface AssistantChatResult {
  *
  * - `start`：流开始，此时 reply / delta / messageId 均无值
  * - `delta`：文本增量片段，delta 字段包含刚生成的一段文本，前端逐字追加
+ * - `tool_start`：Agent 开始调用工具，toolCall 包含工具名与参数
+ * - `tool_end`：工具调用完成，toolCall 包含结果摘要与状态
  * - `done`：流结束，reply 字段包含完整回复文本，messageId 为最终消息 ID
  * - `error`：异常终止，error 字段包含错误描述
  *
  * 参考：POST /api/assistant/chat/stream
  */
+export interface AssistantToolCall {
+  /** 工具调用唯一 ID（后端 run_id），用于前端原地更新卡片 */
+  id: string
+  /** 工具名 */
+  name: string
+  /** 参数摘要（截断 200 字） */
+  args: string
+  /** 结果摘要（截断 500 字，tool_end 时才有） */
+  result?: string
+  /** 执行状态：pending / success / failed */
+  status: 'pending' | 'success' | 'failed'
+}
+
+export interface AssistantConfirmation {
+  /** 确认类型 */
+  type: 'confirmation'
+  /** 写操作名：ban_group / unban_group / delete_document */
+  action: string
+  /** 操作目标描述（群组名/文档名 + ID） */
+  target: string
+  /** 操作影响说明 */
+  impact: string
+  /** 确认按钮文案 */
+  confirmLabel?: string
+  /** 取消按钮文案 */
+  cancelLabel?: string
+}
+
 export interface AssistantChatStreamEvent {
-  /** 事件类型：start / delta / done / error */
-  event: 'start' | 'delta' | 'done' | 'error'
+  /** 事件类型：start / delta / tool_start / tool_end / confirmation / done / error */
+  event: 'start' | 'delta' | 'tool_start' | 'tool_end' | 'confirmation' | 'done' | 'error'
   /** 会话 ID */
   sessionId: number
   /** 本轮回合使用的工具模式 */
@@ -268,6 +301,30 @@ export interface AssistantChatStreamEvent {
   reply: string | null
   /** 引用列表（done 事件时包含全部引用） */
   citations: AssistantCitationItem[]
+  /** 工具调用 ID（仅 tool_start / tool_end 事件有值，后端顶层字段） */
+  id?: string | null
+  /** 工具名（仅 tool_start / tool_end 事件有值） */
+  name?: string | null
+  /** 参数摘要（仅 tool_start / tool_end 事件有值） */
+  args?: string | null
+  /** 结果摘要（仅 tool_end 事件有值） */
+  result?: string | null
+  /** 执行状态（仅 tool_end 事件有值）：success / failed */
+  status?: 'success' | 'failed' | null
+  /** 等待用户确认的写操作信息（仅 confirmation 事件有值，后端扁平字段） */
+  confirmation?: AssistantConfirmation | null
+  /** confirmation 事件：操作类型（type 字段） */
+  type?: string | null
+  /** confirmation 事件：写操作名 */
+  action?: string | null
+  /** confirmation 事件：操作目标描述 */
+  target?: string | null
+  /** confirmation 事件：影响说明 */
+  impact?: string | null
+  /** confirmation 事件：确认按钮文案 */
+  confirmLabel?: string | null
+  /** confirmation 事件：取消按钮文案 */
+  cancelLabel?: string | null
   /** 错误信息（仅 error 事件有值） */
   error: string | null
 }

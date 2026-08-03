@@ -23,6 +23,13 @@ const kbStarters = [
   { title: '步骤指引', prompt: '根据知识库，给出完成「XXX 任务」的完整步骤与注意事项。', icon: 'steps' },
   { title: '源头追溯', prompt: '关于「XXX」这个结论，知识库里有哪些文档支撑？请列出证据。', icon: 'link' },
 ]
+
+const adminStarters = [
+  { title: '群组总览', prompt: '列出所有群组，给出各自的成员数和状态', icon: 'globe' },
+  { title: '文档盘点', prompt: '列出所有处理失败的文档', icon: 'steps' },
+  { title: '内容检索', prompt: '搜索知识库中关于「夹逼准则」的内容', icon: 'book' },
+  { title: '群组详情', prompt: '查看群组「知识库」的统计信息和成员列表', icon: 'compare' },
+]
 </script>
 
 <template>
@@ -45,19 +52,22 @@ const kbStarters = [
       </div>
 
       <p class="aempty__eyebrow">
-        {{ mode === 'CHAT' ? 'Conversational Agent · Argus' : 'Knowledge-Base Retrieval · Argus' }}
+        {{ mode === 'CHAT' ? 'Conversational Agent · Argus' : mode === 'ADMIN' ? 'Admin Console Agent · Argus' : 'Knowledge-Base Retrieval · Argus' }}
       </p>
 
       <h1 class="aempty__title">
         <span class="aempty__title-line">开启一次</span>
         <span class="aempty__title-line aempty__title-line--accent" :class="{ 'is-kb': mode === 'KB_SEARCH' }">
-          {{ mode === 'CHAT' ? '自由对话' : '知识库检索' }}
+          {{ mode === 'CHAT' ? '自由对话' : mode === 'ADMIN' ? '管理助手' : '知识库检索' }}
         </span>
       </h1>
 
       <p class="aempty__subtitle">
         <template v-if="mode === 'CHAT'">
           让 Argus Agent 陪你头脑风暴、解释概念、审代码、做对比 — 所有回答都会保存到会话历史里。
+        </template>
+        <template v-else-if="mode === 'ADMIN'">
+          查看群组与文档、平台统计、搜索知识库内容；停用群组、删除文档等写操作会先与你确认。
         </template>
         <template v-else>
           在指定知识库范围内提问，Agent 会先检索相关文档，再给出带引用溯源的答案。
@@ -68,7 +78,7 @@ const kbStarters = [
       <!-- Starters -->
       <div class="aempty__starters">
         <button
-          v-for="(item, i) in (mode === 'CHAT' ? chatStarters : kbStarters)"
+          v-for="(item, i) in (mode === 'CHAT' ? chatStarters : mode === 'ADMIN' ? adminStarters : kbStarters)"
           :key="`${mode}-${item.title}`"
           class="aempty__starter"
           :class="{ 'is-kb': mode === 'KB_SEARCH' }"

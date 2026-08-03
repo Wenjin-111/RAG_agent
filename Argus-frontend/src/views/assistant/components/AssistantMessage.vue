@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { markdownToHtml } from '@/utils/markdown'
-import type { AssistantCitationItem, AssistantMessageRole, AssistantToolMode } from '@/types/assistant'
+import type {
+  AssistantCitationItem,
+  AssistantConfirmation,
+  AssistantMessageRole,
+  AssistantToolCall,
+  AssistantToolMode,
+} from '@/types/assistant'
 import AssistantCitationBar from './AssistantCitationBar.vue'
+import ToolCallCard from './ToolCallCard.vue'
 
 export interface UiAssistantMessage {
   localId: string
@@ -16,6 +23,10 @@ export interface UiAssistantMessage {
   failed?: boolean
   failureMessage?: string | null
   citations?: AssistantCitationItem[]
+  /** 本轮流式中产生的工具调用（实时卡片） */
+  toolCalls?: AssistantToolCall[]
+  /** 等待用户确认的写操作（human-in-the-loop） */
+  confirmation?: AssistantConfirmation | null
 }
 
 const props = defineProps<{
@@ -25,6 +36,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'inspect-citation': [citation: AssistantCitationItem]
   retry: []
+  'confirm-action': [value: string]
+  'cancel-action': [value: string]
 }>()
 
 const rendered = computed(() => {
@@ -32,9 +45,27 @@ const rendered = computed(() => {
   return markdownToHtml(props.message.content || '')
 })
 
-const toolPayload = computed(() => {
-  if (props.message.role !== 'TOOL') return ''
-  return props.message.content.trim()
+/** 历史 TOOL 消息：content 存 JSON（tool_name/args/result/status） */
+const historicalToolCall = computed<AssistantToolCall | null>(() => {
+  if (props.message.role !== 'TOOL') return null
+  try {
+    const parsed = JSON.parse(props.message.content || '{}') as {
+      tool_name?: string
+      args?: string
+      result?: string
+      status?: string
+    }
+    if (!parsed.tool_name) return null
+    return {
+      id: `hist-${props.message.localId}`,
+      name: parsed.tool_name,
+      args: parsed.args ?? '',
+      result: parsed.result ?? '',
+      status: parsed.status === 'failed' ? 'failed' : 'success',
+    }
+  } catch {
+    return null
+  }
 })
 
 function escapeHtml(s: string): string {
@@ -87,7 +118,7 @@ function pad(n: number): string {
           {{ message.role === 'USER' ? 'You' : message.role === 'ASSISTANT' ? 'Argus' : 'Tool' }}
         </span>
         <span v-if="message.toolMode" class="amsg__mode-tag" :class="`amsg__mode-tag--${message.toolMode.toLowerCase()}`">
-          {{ message.toolMode === 'CHAT' ? 'chat' : 'kb_search' }}
+          {{ message.toolMode === 'CHAT' ? 'chat' : message.toolMode === 'ADMIN' ? 'admin' : 'kb_search' }}
         </span>
         <span class="amsg__time">{{ formatTime(message.createdAt) }}</span>
       </header>
@@ -97,42 +128,42 @@ function pad(n: number): string {
         {{ message.content }}
       </div>
 
-      <!-- TOOL (collapsed code-style) -->
-      <details v-else-if="message.role === 'TOOL'" class="amsg__tool">
-        <summary>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="16 18 22 12 16 6" />
-            <polyline points="8 6 2 12 8 18" />
-          </svg>
-          <span>tool output</span>
-        </summary>
-        <pre class="amsg__tool-body"><code>{{ toolPayload || '(empty)' }}</code></pre>
-      </details>
-
-      <!-- ASSISTANT failed -->
-      <div v-else-if="message.failed" class="amsg__fail">
-        <div class="amsg__fail-head">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="8" x2="12" y2="12" />
-            <line x1="12" y1="16" x2="12.01" y2="16" />
-          </svg>
-          <span>生成失败</span>
-        </div>
-        <p class="amsg__fail-text">
-          {{ message.failureMessage || '请求过程中出现异常，请重试或换一种提问方式。' }}
-        </p>
-        <button class="amsg__fail-retry" type="button" @click="emit('retry')">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="23 4 23 10 17 10" />
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-          </svg>
-          <span>重试</span>
-        </button>
+      <!-- TOOL: 工具调用卡片（历史消息） -->
+      <div v-else-if="message.role === 'TOOL'" class="amsg__tool-calls">
+        <ToolCallCard v-if="historicalToolCall" :call="historicalToolCall" :default-collapsed="true" />
       </div>
 
-      <!-- ASSISTANT streaming or done -->
+      <!-- ASSISTANT: 实时工具调用卡片 + 流式回答 -->
       <template v-else>
+        <div v-if="message.toolCalls && message.toolCalls.length > 0" class="amsg__tool-calls">
+          <ToolCallCard
+            v-for="tc in message.toolCalls"
+            :key="tc.id"
+            :call="tc"
+          />
+        </div>
+
+        <!-- 写操作确认卡片（human-in-the-loop） -->
+        <div v-if="message.confirmation" class="amsg__confirm">
+          <div class="amsg__confirm-head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>需要确认的写操作</span>
+          </div>
+          <p class="amsg__confirm-target">目标：{{ message.confirmation.target }}</p>
+          <p class="amsg__confirm-impact">影响：{{ message.confirmation.impact }}</p>
+          <div class="amsg__confirm-btns">
+            <button class="amsg__confirm-btn amsg__confirm-btn--ok" type="button" @click="emit('confirm-action', 'confirm')">
+              {{ message.confirmation.confirmLabel ?? '确认执行' }}
+            </button>
+            <button class="amsg__confirm-btn amsg__confirm-btn--cancel" type="button" @click="emit('cancel-action', 'cancel')">
+              {{ message.confirmation.cancelLabel ?? '取消' }}
+            </button>
+          </div>
+        </div>
         <div v-if="message.streaming && !message.content" class="amsg__thinking">
           <span class="amsg__thinking-dot" />
           <span class="amsg__thinking-dot" />
@@ -140,7 +171,7 @@ function pad(n: number): string {
           <span class="amsg__thinking-label">Agent 正在思考…</span>
         </div>
 
-        <div v-else class="amsg__md" :class="{ 'is-streaming': message.streaming }">
+        <div v-else-if="!message.failed" class="amsg__md" :class="{ 'is-streaming': message.streaming }">
           <div class="amsg__md-content" v-html="rendered" />
           <span v-if="message.streaming" class="amsg__cursor" />
         </div>
@@ -150,6 +181,28 @@ function pad(n: number): string {
           :citations="message.citations"
           @inspect="(c) => emit('inspect-citation', c)"
         />
+
+        <!-- ASSISTANT failed -->
+        <div v-if="message.failed" class="amsg__fail">
+          <div class="amsg__fail-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>生成失败</span>
+          </div>
+          <p class="amsg__fail-text">
+            {{ message.failureMessage || '请求过程中出现异常，请重试或换一种提问方式。' }}
+          </p>
+          <button class="amsg__fail-retry" type="button" @click="emit('retry')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10" />
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+            </svg>
+            <span>重试</span>
+          </button>
+        </div>
       </template>
     </div>
   </article>
@@ -258,6 +311,11 @@ function pad(n: number): string {
   background: rgba(92, 201, 193, 0.12);
 }
 
+.amsg__mode-tag--admin {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.12);
+}
+
 .amsg__time {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.7rem;
@@ -316,6 +374,74 @@ function pad(n: number): string {
   max-height: 240px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Confirmation (human-in-the-loop) */
+.amsg__confirm {
+  margin: 8px 0;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.08), rgba(245, 158, 11, 0.03));
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 10px;
+}
+
+.amsg__confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  font-family: 'Poppins', 'Noto Sans SC', sans-serif;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #b45309;
+}
+
+.amsg__confirm-target,
+.amsg__confirm-impact {
+  margin: 3px 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.amsg__confirm-btns {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.amsg__confirm-btn {
+  padding: 7px 18px;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.amsg__confirm-btn--ok {
+  color: #fff;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: none;
+  box-shadow: 0 3px 10px rgba(245, 158, 11, 0.3);
+}
+
+.amsg__confirm-btn--ok:hover {
+  box-shadow: 0 5px 16px rgba(245, 158, 11, 0.4);
+  transform: translateY(-1px);
+}
+
+.amsg__confirm-btn--cancel {
+  color: var(--text-secondary);
+  background: #fff;
+  border: 1px solid var(--border-default);
+}
+
+.amsg__confirm-btn--cancel:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
 }
 
 /* Thinking */

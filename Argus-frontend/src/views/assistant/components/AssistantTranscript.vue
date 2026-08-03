@@ -22,6 +22,8 @@ const emit = defineEmits<{
   retry: []
   'load-older': []
   'refresh-summary': []
+  'confirm-action': [message: UiAssistantMessage, value: string]
+  'cancel-action': [message: UiAssistantMessage, value: string]
 }>()
 
 function formatSummaryTime(iso: string | null): string {
@@ -151,6 +153,8 @@ watch(
             :message="m"
             @inspect-citation="(c) => emit('inspect-citation', c)"
             @retry="emit('retry')"
+            @confirm-action="(v) => emit('confirm-action', m, v)"
+            @cancel-action="(v) => emit('cancel-action', m, v)"
           />
         </div>
       </template>

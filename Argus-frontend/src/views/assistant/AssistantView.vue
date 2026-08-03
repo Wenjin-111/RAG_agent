@@ -23,6 +23,7 @@ import type {
   AssistantCitationItem,
   AssistantMessageItem,
   AssistantSessionListItem,
+  AssistantToolCall,
   AssistantToolMode,
 } from '@/types/assistant'
 import type { DocumentItem } from '@/api/document'
@@ -35,6 +36,14 @@ import type { UiAssistantMessage } from './components/AssistantMessage.vue'
 
 const appStore = useAppStore()
 const authStore = useAuthStore()
+
+// 固定模式（如管理助手 /admin/assistant）：模式切换器隐藏，会话按 mode 隔离
+const props = defineProps<{
+  fixedMode?: 'ADMIN'
+}>()
+
+const isAdminMode = computed(() => props.fixedMode === 'ADMIN')
+const sessionMode = computed<AssistantToolMode>(() => props.fixedMode ?? mode.value)
 
 // ── Sessions ──
 const sessions = ref<AssistantSessionListItem[]>([])
@@ -58,7 +67,7 @@ const activeSession = computed(() =>
 )
 
 // ── Mode + KB ──
-const mode = ref<AssistantToolMode>('CHAT')
+const mode = ref<AssistantToolMode>(props.fixedMode ?? 'CHAT')
 const selectedGroupId = ref<number | null>(appStore.currentGroupId)
 
 const selectedGroupName = computed(() => {
@@ -92,7 +101,7 @@ function toUi(m: AssistantMessageItem): UiAssistantMessage {
 async function loadSessions(silent = false) {
   if (!silent) sessionsLoading.value = true
   try {
-    sessions.value = await fetchAssistantSessions()
+    sessions.value = await fetchAssistantSessions('ACTIVE', props.fixedMode)
   } catch (err) {
     console.error('Load sessions failed:', extractApiError(err, ''))
   } finally {
@@ -164,7 +173,7 @@ async function handleRefreshSummary() {
 
 async function loadArchived() {
   try {
-    archivedSessions.value = await fetchAssistantSessions('ARCHIVED')
+    archivedSessions.value = await fetchAssistantSessions('ARCHIVED', props.fixedMode)
   } catch (err) {
     console.error('Load archived sessions failed:', extractApiError(err, ''))
   }
@@ -173,7 +182,7 @@ async function loadArchived() {
 // ── Session actions ──
 async function handleNewSession() {
   try {
-    const detail = await createAssistantSession()
+    const detail = await createAssistantSession(props.fixedMode ?? 'CHAT')
     const item: AssistantSessionListItem = {
       sessionId: detail.sessionId,
       title: detail.title,
@@ -259,7 +268,7 @@ async function handleRestoreSession(id: number) {
 async function ensureSession(): Promise<number | null> {
   if (activeSessionId.value !== null) return activeSessionId.value
   try {
-    const detail = await createAssistantSession()
+    const detail = await createAssistantSession(props.fixedMode ?? 'CHAT')
     const item: AssistantSessionListItem = {
       sessionId: detail.sessionId,
       title: detail.title,
@@ -319,6 +328,7 @@ async function handleAsk(text: string) {
     createdAt: new Date().toISOString(),
     streaming: true,
     citations: [],
+    toolCalls: [],
   }
   messages.value.push(assistantMsg)
   // 关键：push 后 Vue 会把元素包一层 Proxy，只有通过 Proxy 改属性才会触发响应式。
@@ -374,6 +384,51 @@ function onStreamEvent(ev: AssistantChatStreamEvent, target: UiAssistantMessage)
     case 'delta':
       if (ev.delta) target.content += ev.delta
       break
+    case 'tool_start': {
+      if (!target.toolCalls) target.toolCalls = []
+      const call: AssistantToolCall = {
+        id: ev.id ?? `t-${target.toolCalls.length}`,
+        name: ev.name ?? 'tool',
+        args: ev.args ?? '',
+        status: 'pending',
+      }
+      const existing = target.toolCalls.find((c) => c.id === call.id)
+      if (existing) {
+        Object.assign(existing, call)
+      } else {
+        target.toolCalls.push(call)
+      }
+      break
+    }
+    case 'tool_end': {
+      if (!target.toolCalls) target.toolCalls = []
+      const call: AssistantToolCall = {
+        id: ev.id ?? `t-${target.toolCalls.length}`,
+        name: ev.name ?? 'tool',
+        args: ev.args ?? '',
+        result: ev.result ?? '',
+        status: ev.status === 'failed' ? 'failed' : 'success',
+      }
+      const existing = target.toolCalls.find((c) => c.id === call.id)
+      if (existing) {
+        existing.result = call.result
+        existing.status = call.status
+      } else {
+        target.toolCalls.push(call)
+      }
+      break
+    }
+    case 'confirmation':
+      target.confirmation = {
+        type: 'confirmation',
+        action: ev.action ?? '',
+        target: ev.target ?? '',
+        impact: ev.impact ?? '',
+        confirmLabel: ev.confirmLabel ?? undefined,
+        cancelLabel: ev.cancelLabel ?? undefined,
+      }
+      target.streaming = false
+      break
     case 'done':
       if (ev.reply != null && ev.reply.length > 0) {
         // Prefer authoritative final reply
@@ -391,6 +446,40 @@ function onStreamEvent(ev: AssistantChatStreamEvent, target: UiAssistantMessage)
       target.failed = true
       target.failureMessage = ev.error ?? '生成失败'
       break
+  }
+}
+
+// ── Human-in-the-loop：确认/取消写操作 ──
+async function resumeInterrupted(target: UiAssistantMessage, value: string) {
+  if (streaming.value || activeSessionId.value === null) return
+  target.confirmation = null
+  streaming.value = true
+  streamAbort = new AbortController()
+
+  try {
+    await streamAssistantMessage(
+      {
+        sessionId: activeSessionId.value,
+        message: lastAskPayload?.text ?? '继续',
+        toolMode: target.toolMode ?? 'ADMIN',
+        resume: value,
+      },
+      authStore.accessToken,
+      {
+        signal: streamAbort.signal,
+        onEvent: (ev) => onStreamEvent(ev, target),
+      },
+    )
+  } catch (err) {
+    if ((err as { name?: string })?.name !== 'AbortError') {
+      target.failed = true
+      target.failureMessage = extractApiError(err, '确认操作失败')
+    }
+  } finally {
+    streaming.value = false
+    streamAbort = null
+    bumpSession(activeSessionId.value)
+    loadSessions(true)
   }
 }
 
@@ -429,7 +518,7 @@ async function handleRetry() {
 const composerRef = ref<InstanceType<typeof AssistantComposer> | null>(null)
 
 function handleStarterPick(prompt: string, starterMode: AssistantToolMode) {
-  mode.value = starterMode
+  if (!isAdminMode.value) mode.value = starterMode
   composerRef.value?.setText(prompt)
 }
 
@@ -514,6 +603,8 @@ onMounted(async () => {
           @retry="handleRetry"
           @load-older="loadOlderMessages"
           @refresh-summary="handleRefreshSummary"
+          @confirm-action="(m, v) => resumeInterrupted(m, v)"
+          @cancel-action="(m, v) => resumeInterrupted(m, v)"
         />
       </template>
       <template v-else>
@@ -531,6 +622,7 @@ onMounted(async () => {
         :disabled="false"
         :streaming="streaming"
         :groups="appStore.visibleGroups"
+        :mode-locked="isAdminMode"
         @submit="handleAsk"
         @abort="abortStream"
       />

@@ -103,6 +103,13 @@ const router = createRouter({
           meta: { title: '审计日志', requireAdmin: true },
         },
         {
+          path: 'admin/assistant',
+          name: 'admin-assistant',
+          component: () => import('../views/assistant/AssistantView.vue'),
+          props: { fixedMode: 'ADMIN' },
+          meta: { title: '管理助手', requireAdmin: true },
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('../views/settings/SettingsView.vue'),

@@ -9,6 +9,8 @@ const props = defineProps<{
   mode: AssistantToolMode
   groups: VisibleGroup[]
   selectedGroupId: number | null
+  /** 固定模式（如管理助手）：隐藏模式切换器 */
+  modeLocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +35,7 @@ const placeholder = computed(() => {
   if (props.disabled) return '请先在左侧选择或新建一个会话'
   if (kbBlocked.value) return '请先选择要检索的知识库群组'
   if (props.streaming) return '正在接收回答…（按 Esc 中断）'
+  if (props.mode === 'ADMIN') return '向管理助手提问：查看群组/文档、统计、搜索知识库，或停用群组、删除文档'
   return props.mode === 'CHAT'
     ? '和 Argus 聊点什么？按 Enter 发送 / Shift + Enter 换行'
     : '在知识库中提问，答案会附带证据引用'
@@ -87,7 +90,7 @@ defineExpose({ focus, setText })
     <div class="acx__wrap">
       <div class="acx__shell" :class="{ 'is-disabled': disabled, 'is-kb': isKb, 'is-streaming': streaming }">
         <div class="acx__meta">
-          <ModeSwitcher :mode="mode" @update:mode="(m) => emit('update:mode', m)" />
+          <ModeSwitcher v-if="!modeLocked" :mode="mode" @update:mode="(m) => emit('update:mode', m)" />
 
           <!-- KB picker (only in KB_SEARCH) -->
           <div v-if="isKb" class="acx__kb">

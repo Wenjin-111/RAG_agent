@@ -18,7 +18,9 @@ const periodOptions: { label: string; value: Period }[] = [
   { label: '30天', value: 'LAST_30_DAYS' },
 ]
 
-const selectedPeriod = ref<Period>('LAST_7_DAYS')
+// 用户排行与群组排行各自独立的周期（互不联动）
+const userPeriod = ref<Period>('LAST_7_DAYS')
+const groupPeriod = ref<Period>('LAST_7_DAYS')
 
 // ── 数据状态 ──
 const overview = ref<MetricsOverview | null>(null)
@@ -26,7 +28,8 @@ const userRank = ref<UsageRankItem[]>([])
 const groupRank = ref<UsageRankItem[]>([])
 
 const loadingOverview = ref(false)
-const loadingRank = ref(false)
+const loadingUserRank = ref(false)
+const loadingGroupRank = ref(false)
 const errorMsg = ref('')
 
 // ── 格式化工具 ──
@@ -34,8 +37,9 @@ function formatNumber(n: number): string {
   return n.toLocaleString('zh-CN')
 }
 
+// 费用显示统一 ×10（计价口径调整，历史记录按新口径展示）
 function formatCost(n: number): string {
-  return n.toFixed(4)
+  return (n * 10).toFixed(4)
 }
 
 function formatPercent(n: number): string {
@@ -158,29 +162,35 @@ async function loadOverview() {
   }
 }
 
-async function loadRanks() {
-  loadingRank.value = true
+async function loadUserRank() {
+  loadingUserRank.value = true
   try {
-    const [users, groups] = await Promise.all([
-      fetchUserRank(10, selectedPeriod.value),
-      fetchGroupRank(10, selectedPeriod.value),
-    ])
-    userRank.value = users
-    groupRank.value = groups
+    userRank.value = await fetchUserRank(10, userPeriod.value)
   } catch (err) {
-    errorMsg.value = extractApiError(err, '加载排行数据失败')
+    errorMsg.value = extractApiError(err, '加载用户排行失败')
   } finally {
-    loadingRank.value = false
+    loadingUserRank.value = false
   }
 }
 
-watch(selectedPeriod, () => {
-  loadRanks()
-})
+async function loadGroupRank() {
+  loadingGroupRank.value = true
+  try {
+    groupRank.value = await fetchGroupRank(10, groupPeriod.value)
+  } catch (err) {
+    errorMsg.value = extractApiError(err, '加载群组排行失败')
+  } finally {
+    loadingGroupRank.value = false
+  }
+}
+
+watch(userPeriod, loadUserRank)
+watch(groupPeriod, loadGroupRank)
 
 onMounted(() => {
   loadOverview()
-  loadRanks()
+  loadUserRank()
+  loadGroupRank()
 })
 </script>
 
@@ -367,45 +377,51 @@ onMounted(() => {
             v-for="opt in periodOptions"
             :key="opt.value"
             class="period-tab"
-            :class="{ active: selectedPeriod === opt.value }"
-            @click="selectedPeriod = opt.value"
+            :class="{ active: userPeriod === opt.value }"
+            @click="userPeriod = opt.value"
           >
             {{ opt.label }}
           </button>
         </div>
 
-        <div v-if="loadingRank" class="loading-inline">
+        <div v-if="loadingUserRank && userRank.length === 0" class="loading-inline">
           <span>加载中...</span>
         </div>
-        <table v-else-if="userRank.length > 0" class="rank-table">
-          <thead>
-            <tr>
-              <th class="rank-num-col">#</th>
-              <th>用户</th>
-              <th class="num-col">调用次数</th>
-              <th class="num-col">Token</th>
-              <th class="num-col">费用</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(item, idx) in userRank" :key="item.id">
-              <td class="rank-num-col">
-                <span class="rank-badge" :class="getRankBadgeClass(idx)">{{ idx + 1 }}</span>
-              </td>
-              <td class="name-col">
-                <div class="user-chip">
-                  <span class="user-chip__avatar" :style="{ background: getAvatarColor(idx) }">
-                    {{ getInitial(item.name) }}
-                  </span>
-                  <span class="user-chip__name">{{ item.name }}</span>
-                </div>
-              </td>
-              <td class="num-col">{{ formatNumber(item.totalRequests) }}</td>
-              <td class="num-col">{{ formatNumber(item.totalTokens) }}</td>
-              <td class="num-col num-col--cost">{{ formatCost(item.totalCost) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <template v-else-if="userRank.length > 0">
+          <div v-if="loadingUserRank" class="rank-refresh">
+            <span class="rank-refresh__spinner" />
+            <span>刷新中…</span>
+          </div>
+          <table class="rank-table">
+            <thead>
+              <tr>
+                <th class="rank-num-col">#</th>
+                <th>用户</th>
+                <th class="num-col">调用次数</th>
+                <th class="num-col">Token</th>
+                <th class="num-col">费用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(item, idx) in userRank" :key="item.id">
+                <td class="rank-num-col">
+                  <span class="rank-badge" :class="getRankBadgeClass(idx)">{{ idx + 1 }}</span>
+                </td>
+                <td class="name-col">
+                  <div class="user-chip">
+                    <span class="user-chip__avatar" :style="{ background: getAvatarColor(idx) }">
+                      {{ getInitial(item.name) }}
+                    </span>
+                    <span class="user-chip__name">{{ item.name }}</span>
+                  </div>
+                </td>
+                <td class="num-col">{{ formatNumber(item.totalRequests) }}</td>
+                <td class="num-col">{{ formatNumber(item.totalTokens) }}</td>
+                <td class="num-col num-col--cost">{{ formatCost(item.totalCost) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
         <div v-else class="empty-state">
           <p>暂无用户排行数据</p>
         </div>
@@ -422,38 +438,44 @@ onMounted(() => {
             v-for="opt in periodOptions"
             :key="opt.value"
             class="period-tab"
-            :class="{ active: selectedPeriod === opt.value }"
-            @click="selectedPeriod = opt.value"
+            :class="{ active: groupPeriod === opt.value }"
+            @click="groupPeriod = opt.value"
           >
             {{ opt.label }}
           </button>
         </div>
 
-        <div v-if="loadingRank" class="loading-inline">
+        <div v-if="loadingGroupRank && groupRank.length === 0" class="loading-inline">
           <span>加载中...</span>
         </div>
-        <table v-else-if="groupRank.length > 0" class="rank-table">
-          <thead>
-            <tr>
-              <th class="rank-num-col">#</th>
-              <th>群组</th>
-              <th class="num-col">调用次数</th>
-              <th class="num-col">Token</th>
-              <th class="num-col">费用</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(item, idx) in groupRank" :key="item.id">
-              <td class="rank-num-col">
-                <span class="rank-badge" :class="getRankBadgeClass(idx)">{{ idx + 1 }}</span>
-              </td>
-              <td class="name-col">{{ item.name }}</td>
-              <td class="num-col">{{ formatNumber(item.totalRequests) }}</td>
-              <td class="num-col">{{ formatNumber(item.totalTokens) }}</td>
-              <td class="num-col num-col--cost">{{ formatCost(item.totalCost) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <template v-else-if="groupRank.length > 0">
+          <div v-if="loadingGroupRank" class="rank-refresh">
+            <span class="rank-refresh__spinner" />
+            <span>刷新中…</span>
+          </div>
+          <table class="rank-table">
+            <thead>
+              <tr>
+                <th class="rank-num-col">#</th>
+                <th>群组</th>
+                <th class="num-col">调用次数</th>
+                <th class="num-col">Token</th>
+                <th class="num-col">费用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(item, idx) in groupRank" :key="item.id">
+                <td class="rank-num-col">
+                  <span class="rank-badge" :class="getRankBadgeClass(idx)">{{ idx + 1 }}</span>
+                </td>
+                <td class="name-col">{{ item.name }}</td>
+                <td class="num-col">{{ formatNumber(item.totalRequests) }}</td>
+                <td class="num-col">{{ formatNumber(item.totalTokens) }}</td>
+                <td class="num-col num-col--cost">{{ formatCost(item.totalCost) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
         <div v-else class="empty-state">
           <p>暂无群组排行数据</p>
         </div>
@@ -881,6 +903,32 @@ onMounted(() => {
   padding: 40px 20px;
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* 背景刷新指示（切换周期时表格保留，仅顶部小 spinner） */
+.rank-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.rank-refresh__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(74, 144, 217, 0.2);
+  border-top-color: var(--brand-primary);
+  border-radius: 50%;
+  animation: rank-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes rank-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── 响应式 ── */

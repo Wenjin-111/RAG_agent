@@ -585,7 +585,7 @@ onUnmounted(() => {
             </div>
             <div class="usage-item">
               <div class="usage-item__label">费用（元）</div>
-              <div class="usage-item__value">{{ usageData.totalCost }}</div>
+              <div class="usage-item__value">{{ (usageData.totalCost * 10).toFixed(4) }}</div>
             </div>
           </div>
           <p class="usage-hint">统计范围：最近 30 天</p>
