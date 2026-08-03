@@ -35,16 +35,20 @@ class AssistantService:
 
     # ---- Sessions ----
 
-    async def list_sessions(self, user_id: int, status: str = SESSION_STATUS_ACTIVE) -> List[dict]:
+    async def list_sessions(self, user_id: int, status: str = SESSION_STATUS_ACTIVE,
+                            mode: Optional[str] = None) -> List[dict]:
         if status == SESSION_STATUS_ACTIVE:
             await self._lazy_archive(user_id)
-        result = await self.session.execute(
+        stmt = (
             select(AssistantSession)
             .where(AssistantSession.user_id == user_id, AssistantSession.status == status)
             .order_by(AssistantSession.last_message_at.desc().nullslast(), AssistantSession.created_at.desc())
         )
+        if mode:
+            stmt = stmt.where(AssistantSession.mode == mode)
+        result = await self.session.execute(stmt)
         return [
-            {"session_id": s.id, "title": s.title, "status": s.status,
+            {"session_id": s.id, "title": s.title, "mode": s.mode, "status": s.status,
              "last_message_at": _fmt(s.last_message_at), "created_at": _fmt(s.created_at)}
             for s in result.scalars()
         ]
@@ -87,15 +91,18 @@ class AssistantService:
             raise BusinessException("会话不存在")
         await self.session.flush()
 
-    async def create_session(self, user_id: int, title: str = "新会话") -> dict:
+    async def create_session(self, user_id: int, title: str = "新会话",
+                             mode: str = "CHAT") -> dict:
         session_entity = AssistantSession(
             user_id=user_id,
             title=title,
+            mode=mode,
             status="ACTIVE",
         )
         self.session.add(session_entity)
         await self.session.flush()
-        return {"session_id": session_entity.id, "title": session_entity.title, "status": session_entity.status}
+        return {"session_id": session_entity.id, "title": session_entity.title,
+                "mode": session_entity.mode, "status": session_entity.status}
 
     async def update_session(self, user_id: int, session_id: int, title: str) -> dict:
         await self.session.execute(
@@ -206,7 +213,8 @@ class AssistantService:
     # ---- Chat ----
 
     async def chat(self, user_id: int, session_id: int, message: str,
-                   tool_mode: str = "CHAT", group_id: Optional[int] = None) -> dict:
+                   tool_mode: str = "CHAT", group_id: Optional[int] = None,
+                   system_role: str = "USER", user_code: str = "") -> dict:
         session_id = await self._ensure_session(user_id, session_id)
 
         # Save user message
@@ -225,7 +233,11 @@ class AssistantService:
 
         # Call agent
         thread_id = f"session_{session_id}"
-        result = await facade.chat_sync(instruction, message, tool_mode, group_id, thread_id, user_id)
+        result = await facade.chat_sync(instruction, message, tool_mode, group_id, thread_id,
+                                        user_id, system_role, user_code)
+
+        # Save tool-call messages before the assistant reply
+        self._save_tool_messages(session_id, tool_mode, result.get("tool_calls", []))
 
         # Save assistant message
         self.session.add(AssistantMessage(
@@ -259,26 +271,47 @@ class AssistantService:
         }
 
     async def chat_stream(self, user_id: int, session_id: int, message: str,
-                          tool_mode: str = "CHAT", group_id: Optional[int] = None) -> AsyncIterator[str]:
+                          tool_mode: str = "CHAT", group_id: Optional[int] = None,
+                          system_role: str = "USER", user_code: str = "",
+                          resume: Optional[str] = None) -> AsyncIterator[dict]:
         session_id = await self._ensure_session(user_id, session_id)
 
-        # Save user message
-        self.session.add(AssistantMessage(
-            session_id=session_id, role="USER", tool_mode=tool_mode,
-            group_id=group_id, content=message,
-        ))
-        await self.session.flush()
-
-        await self.memory.maintain_before_response(session_id, user_id)
+        if resume is None:
+            # 首次请求：保存用户消息 + 记忆维护 + 构建指令
+            self.session.add(AssistantMessage(
+                session_id=session_id, role="USER", tool_mode=tool_mode,
+                group_id=group_id, content=message,
+            ))
+            await self.session.flush()
+            await self.memory.maintain_before_response(session_id, user_id)
         ctx = await self.memory.load_context(session_id)
         instruction = self._build_instruction(ctx, tool_mode)
 
         thread_id = f"session_{session_id}"
         full_reply = ""
+        tool_calls = []
+        interrupted = False
 
-        async for delta in facade.chat_stream(instruction, message, tool_mode, group_id, thread_id, user_id):
-            full_reply += delta
-            yield delta
+        async for ev in facade.chat_stream(instruction, message, tool_mode, group_id, thread_id,
+                                           user_id, system_role, user_code, resume):
+            if ev["event"] == "delta":
+                full_reply += ev["data"]
+                yield ev
+            elif ev["event"] == "confirmation":
+                interrupted = True
+                yield ev
+            elif ev["event"] == "done":
+                tool_calls = ev["data"].get("tool_calls", [])
+            else:
+                yield ev  # tool_start / tool_end 透传给前端
+
+        if interrupted:
+            # 首次流被 interrupt 暂停：不落空 ASSISTANT 消息，
+            # 等待用户确认后的恢复流再落库（USER 消息已保存）
+            return
+
+        # Save tool-call messages before the assistant reply
+        self._save_tool_messages(session_id, tool_mode, tool_calls)
 
         # Save assistant message
         self.session.add(AssistantMessage(
@@ -308,11 +341,37 @@ class AssistantService:
         result = await self.create_session(user_id)
         return result["session_id"]
 
+    def _save_tool_messages(self, session_id: int, tool_mode: str, tool_calls: list) -> None:
+        """Persist each tool call as one TOOL message (content = JSON)."""
+        import json
+        for tc in tool_calls:
+            self.session.add(AssistantMessage(
+                session_id=session_id, role="TOOL", tool_mode=tool_mode,
+                content=json.dumps({
+                    "tool_name": tc.get("name", ""),
+                    "args": tc.get("args", ""),
+                    "result": tc.get("result", ""),
+                    "status": tc.get("status", "success"),
+                }, ensure_ascii=False),
+            ))
+
     def _build_instruction(self, ctx: dict, tool_mode: str) -> str:
         parts = ["你是一个智能AI助手。"]
         if tool_mode == "KB_SEARCH":
             parts.append("你可以使用 knowledge_base_search 工具搜索知识库文档。"
                          "每次对话只能调用一次搜索工具。获取证据后直接给出最终回答。")
+        elif tool_mode == "ADMIN":
+            parts.append(
+                "你是平台管理助手，管理员可以通过你管理群组和文档。可用工具：\n"
+                "- list_groups 列出全部群组\n- get_group_stats 查看群组统计（文档数/存储/成员数）\n"
+                "- list_group_members 查看群组成员\n- list_documents 列出文档（可按群组/状态/文件名筛选）\n"
+                "- search_knowledge 搜索知识库内容\n"
+                "- ban_group 停用群组 / unban_group 恢复群组 / delete_document 删除文档\n"
+                "规则：\n"
+                "1. 停用、恢复、删除等写操作，直接调用对应工具（ban_group/unban_group/delete_document）；"
+                "工具会在执行前自动暂停，等待用户在界面上确认或取消，**不要用文字向用户询问确认，直接调用工具**；\n"
+                "2. 回答必须基于工具返回的真实数据，查不到就如实说明；\n"
+                "3. 涉及群组时先用 list_groups 确认群组 id，涉及文档时先用 list_documents 确认文档 id。")
 
         # Include recent conversation history so the assistant has short-term memory
         recent = ctx.get("recent_messages", [])

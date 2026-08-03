@@ -131,8 +131,10 @@ async def stream_ask(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # 权限检查必须在响应开始前，否则 SSE 已启动后抛 403 无法返回错误码
+    await require_group_access(db, current_user.user_id, current_user.system_role, request.group_id)
+
     async def event_generator():
-        await require_group_access(db, current_user.user_id, current_user.system_role, request.group_id)
         async for event in qa_service.ask_stream(
             current_user.user_id, request.group_id, request.question,
             session_id=request.session_id,

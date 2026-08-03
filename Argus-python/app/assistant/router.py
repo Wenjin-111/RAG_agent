@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, require_admin
 from app.common.response import ApiResponse
 from app.common.security.context import AuthenticatedUser
 from app.dependencies import get_db
@@ -18,11 +18,15 @@ router = APIRouter()
 @router.get("/sessions")
 async def list_sessions(
     status: str = Query(default="ACTIVE"),
+    mode: str | None = Query(default=None),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if mode == "ADMIN" and current_user.system_role != "ADMIN":
+        from app.common.exception.exceptions import ForbiddenException
+        raise ForbiddenException("无权访问管理会话")
     service = AssistantService(db)
-    sessions = await service.list_sessions(current_user.user_id, status=status)
+    sessions = await service.list_sessions(current_user.user_id, status=status, mode=mode)
     return sessions  # Frontend expects direct array
 
 
@@ -61,11 +65,16 @@ async def summarize_session(
 
 @router.post("/sessions")
 async def create_session(
+    body: dict = None,
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    mode = (body or {}).get("mode", "CHAT")
+    if mode == "ADMIN" and current_user.system_role != "ADMIN":
+        from app.common.exception.exceptions import ForbiddenException
+        raise ForbiddenException("无权创建管理会话")
     service = AssistantService(db)
-    result = await service.create_session(current_user.user_id)
+    result = await service.create_session(current_user.user_id, mode=mode)
     return ApiResponse.ok(data=result)
 
 
@@ -140,6 +149,7 @@ async def chat(
     result = await service.chat(
         current_user.user_id, request.session_id or 0, request.message,
         request.tool_mode, request.group_id,
+        current_user.system_role, current_user.user_code,
     )
     return ApiResponse.ok(data=result)
 
@@ -152,14 +162,24 @@ async def chat_stream(
 ):
     if request.group_id is not None:
         await require_group_access(db, current_user.user_id, current_user.system_role, request.group_id)
+    if request.tool_mode == "ADMIN" and current_user.system_role != "ADMIN":
+        from app.common.exception.exceptions import ForbiddenException
+        raise ForbiddenException("无权使用管理助手")
     service = AssistantService(db)
 
     async def event_generator():
-        async for chunk in service.chat_stream(
+        async for ev in service.chat_stream(
             current_user.user_id, request.session_id or 0, request.message,
             request.tool_mode, request.group_id,
+            current_user.system_role, current_user.user_code,
+            resume=request.resume,
         ):
-            yield f"event: delta\ndata: {json.dumps({'event': 'delta', 'delta': chunk})}\n\n"
+            event_name = ev["event"]
+            if event_name == "delta":
+                # 前端解析约定 data 为 {"delta": "..."} 对象
+                yield f"event: delta\ndata: {json.dumps({'delta': ev['data']}, ensure_ascii=False)}\n\n"
+            else:
+                yield f"event: {event_name}\ndata: {json.dumps(ev['data'], ensure_ascii=False)}\n\n"
         yield 'event: done\ndata: {"event":"done","reply":"","citations":[]}\n\n'
 
     return StreamingResponse(

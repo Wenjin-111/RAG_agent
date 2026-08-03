@@ -17,6 +17,7 @@ class AssistantSession(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="新会话")
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="CHAT")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
     last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())

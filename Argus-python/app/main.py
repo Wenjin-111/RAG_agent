@@ -154,9 +154,12 @@ async def _init_database(engine):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-        # Idempotent column for QA evidence-level statistics (no migration tooling)
+        # Idempotent columns for QA evidence-level statistics (no migration tooling)
         await conn.execute(text(
             "ALTER TABLE qa_messages ADD COLUMN IF NOT EXISTS evidence_level VARCHAR(16)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE assistant_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(32) DEFAULT 'CHAT'"
         ))
     logger.info("Database tables initialized")
 

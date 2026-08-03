@@ -7,6 +7,8 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     tool_mode: str = Field(default="CHAT", alias="toolMode")
     group_id: Optional[int] = Field(default=None, alias="groupId")
+    # human-in-the-loop 恢复值：写工具被 interrupt 暂停后，用户确认时传入
+    resume: Optional[str] = Field(default=None)
 
     model_config = {"populate_by_name": True}
 
